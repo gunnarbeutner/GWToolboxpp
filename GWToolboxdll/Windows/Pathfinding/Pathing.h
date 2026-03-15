@@ -130,4 +130,9 @@ namespace Pathing {
 
         Error Search(const GW::GamePos& start_pos, const GW::GamePos& goal_pos);
     };
+
+    // Terrain accessibility checks
+    GW::PathingTrapezoid* FindTrapezoid(const GW::GamePos& point, GW::PathingMapArray* map);
+    GW::PathingTrapezoid* FindClosestTrapezoid(const GW::GamePos& point);
+    GW::PathingTrapezoid* FindClosestPositionOnTrapezoid(GW::GamePos& point);
 }

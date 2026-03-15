@@ -29,6 +29,9 @@ public:
 
     static const TBHotkey* CurrentHotkey();
 
+    static const std::vector<std::string>& GetGroupOrder();
+    static const std::unordered_map<std::string, std::vector<TBHotkey*>>& GetGroupedHotkeys();
+
     // Update. Will always be called every frame.
     void Update(float delta) override;
 

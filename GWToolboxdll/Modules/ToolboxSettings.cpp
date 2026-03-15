@@ -94,6 +94,7 @@
 #include <Widgets/MissionMapWidget.h>
 #include <Widgets/InventoryOverlayWidget.h>
 #include <Widgets/TitleTrackerWidget.h>
+#include <Widgets/HotkeyGroupWidget.h>
 #include "ToolboxSettings.h"
 
 
@@ -189,6 +190,7 @@ namespace {
 #endif
         ActiveQuestWidget::Instance(),
         TitleTrackerWidget::Instance(),
+        HotkeyGroupWidget::Instance(),
         PconsWindow::Instance(),
         HotkeysWindow::Instance(),
         BuildsWindow::Instance(),

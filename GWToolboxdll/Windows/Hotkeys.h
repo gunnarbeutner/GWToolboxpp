@@ -405,6 +405,38 @@ public:
     void Execute() override;
 };
 
+class HotkeyHeroFormation : public TBHotkey {
+public:
+    struct FormationSlot {
+        float x = 0.0f;
+        float y = 0.0f;
+        float radius = 0.0f;  // random scatter radius (game units)
+        uint64_t hero_ids = 0; // bitmask indexed by HeroID enum value
+    };
+
+    FormationSlot slots[7]{};
+    int selected_slot = -1;
+    bool use_target_direction = false;
+    int zoom_level = 0;           // 0=aggro(±1010), 1=spirit(±2500), 2=compass(±5000)
+    char name[64] = "Formation";
+
+    static const char* IniSection() { return "HeroFormation"; }
+    [[nodiscard]] const char* Name() const override { return IniSection(); }
+
+    HotkeyHeroFormation(const ToolboxIni* ini, const char* section);
+
+    void Save(ToolboxIni* ini, const char* section) const override;
+
+    bool Draw() override;
+    int Description(char* buf, size_t bufsz) override;
+    void Execute() override;
+
+private:
+    void DrawFormationCanvas();
+    void DrawHeroAssignment();
+    static int GetPartyIndexForHero(GW::Constants::HeroID hero_id);
+};
+
 class HotkeyGWKey : public TBHotkey {
     GW::UI::ControlAction action = GW::UI::ControlAction::ControlAction_ActivateWeaponSet1;
     int action_idx = -1;
@@ -445,4 +477,24 @@ public:
     bool Draw() override;
     int Description(char* buf, size_t bufsz) override;
     void Execute() override;
+};
+
+class HotkeyHeroBehavior : public TBHotkey {
+public:
+    GW::HeroBehavior behavior = static_cast<GW::HeroBehavior>(1); // Guard
+    uint64_t hero_ids = 0; // bitmask indexed by HeroID enum value (0 = all)
+
+    static const char* IniSection() { return "HeroBehavior"; }
+
+    [[nodiscard]] const char* Name() const override { return IniSection(); }
+
+    HotkeyHeroBehavior(const ToolboxIni* ini, const char* section);
+
+    void Save(ToolboxIni* ini, const char* section) const override;
+
+    bool Draw() override;
+    int Description(char* buf, size_t bufsz) override;
+    void Execute() override;
+
+    static bool ShouldSuppressChatMessage(const wchar_t* message, uint32_t channel);
 };

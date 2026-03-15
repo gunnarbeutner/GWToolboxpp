@@ -17,6 +17,7 @@
 #include <Utils/ToolboxUtils.h>
 #include <Defines.h>
 #include <Utils/GuiUtils.h>
+#include <Windows/Hotkeys.h>
 #include "ChatSettings.h"
 #include <Utils/TextUtils.h>
 #include <GWCA/Utilities/Scanner.h>
@@ -395,11 +396,23 @@ namespace {
             } break;
             case GW::UI::UIMessage::kWriteToChatLogWithSender: {
                 // Redirect NPC messages from team chat to emote chat
-                if (!redirect_npc_messages_to_emote_chat) 
+                if (!redirect_npc_messages_to_emote_chat)
                     break;
                 const auto param = static_cast<GW::UI::UIPacket::kWriteToChatLogWithSender*>(wParam);
                 if (param->channel == GW::Chat::Channel::CHANNEL_GROUP || param->channel == GW::Chat::Channel::CHANNEL_ALLIES)
                     param->channel = GW::Chat::Channel::CHANNEL_EMOTE;
+            } break;
+            case GW::UI::UIMessage::kPrintChatMessage: {
+                const auto param = static_cast<GW::UI::UIPacket::kPrintChatMessage*>(wParam);
+                if (HotkeyHeroBehavior::ShouldSuppressChatMessage(param->message, param->channel)) {
+                    status->blocked = true;
+                }
+            } break;
+            case GW::UI::UIMessage::kLogChatMessage: {
+                const auto param = static_cast<GW::UI::UIPacket::kLogChatMessage*>(wParam);
+                if (HotkeyHeroBehavior::ShouldSuppressChatMessage(param->message, static_cast<uint32_t>(param->channel))) {
+                    status->blocked = true;
+                }
             } break;
             case GW::UI::UIMessage::kStartWhisper: {
                 OnStartWhisper(status, message_id, wParam, lParam);
@@ -426,7 +439,8 @@ void ChatSettings::Initialize()
 
     constexpr GW::UI::UIMessage ui_messages[] = {GW::UI::UIMessage::kAgentSpeechBubble, GW::UI::UIMessage::kDialogueMessage, GW::UI::UIMessage::kPreferenceFlagChanged,    GW::UI::UIMessage::kPreferenceValueChanged,
                                                  GW::UI::UIMessage::kPlayerChatMessage, GW::UI::UIMessage::kWriteToChatLog,  GW::UI::UIMessage::kWriteToChatLogWithSender, GW::UI::UIMessage::kRecvWhisper,
-                                                 GW::UI::UIMessage::kStartWhisper,      GW::UI::UIMessage::kSendChatMessage, GW::UI::UIMessage::kAgentSpeechBubble};
+                                                 GW::UI::UIMessage::kStartWhisper,      GW::UI::UIMessage::kSendChatMessage, GW::UI::UIMessage::kAgentSpeechBubble,
+                                                 GW::UI::UIMessage::kPrintChatMessage,  GW::UI::UIMessage::kLogChatMessage};
     for (const auto message_id : ui_messages) {
         GW::UI::RegisterUIMessageCallback(&OnUIMessage_Entry, message_id, OnUIMessage);
     }
