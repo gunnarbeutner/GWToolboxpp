@@ -200,6 +200,7 @@ namespace {
         };
 
         std::vector<Vertex> vertices;
+        constexpr float LINE_HALF_THICKNESS = 1.5f; // 3px wide route lines
 
         for (const auto& line : lines) {
             if (!line->visible) continue;
@@ -215,9 +216,20 @@ namespace {
             if (!GamePosToMissionMapScreenPos(line->p2, projected_p2))
                 continue;
 
-            // Add two vertices for the line
-            vertices.push_back({projected_p1.x, projected_p1.y, 0.0f, 1.0f, static_cast<DWORD>(line->color)});
-            vertices.push_back({projected_p2.x, projected_p2.y, 0.0f, 1.0f, static_cast<DWORD>(line->color)});
+            const DWORD color = static_cast<DWORD>(line->color);
+            float dx = projected_p2.x - projected_p1.x;
+            float dy = projected_p2.y - projected_p1.y;
+            const float len = sqrtf(dx * dx + dy * dy);
+            if (len < 0.001f) continue;
+            const float nx = -dy / len * LINE_HALF_THICKNESS;
+            const float ny =  dx / len * LINE_HALF_THICKNESS;
+
+            const Vertex v0 = {projected_p1.x + nx, projected_p1.y + ny, 0.0f, 1.0f, color};
+            const Vertex v1 = {projected_p1.x - nx, projected_p1.y - ny, 0.0f, 1.0f, color};
+            const Vertex v2 = {projected_p2.x - nx, projected_p2.y - ny, 0.0f, 1.0f, color};
+            const Vertex v3 = {projected_p2.x + nx, projected_p2.y + ny, 0.0f, 1.0f, color};
+            vertices.push_back(v0); vertices.push_back(v1); vertices.push_back(v2);
+            vertices.push_back(v0); vertices.push_back(v2); vertices.push_back(v3);
         }
         if (vertices.empty())
             return;
@@ -249,7 +261,7 @@ namespace {
         dx_device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
         dx_device->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE); // Use a flexible vertex format
 
-        dx_device->DrawPrimitiveUP(D3DPT_LINELIST, vertices.size() / 2, vertices.data(), sizeof(Vertex));
+        dx_device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, vertices.size() / 3, vertices.data(), sizeof(Vertex));
 
         // Restore original scissor rect and render states
         dx_device->SetFVF(oldFVF);
