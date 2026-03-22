@@ -28,6 +28,8 @@
 #include <Windows/Hotkeys/HotkeyFlagHero.h>
 #include <Windows/Hotkeys/HotkeyGroup.h>
 #include <Windows/Hotkeys/HotkeyGWKey.h>
+#include <Windows/Hotkeys/HotkeyHeroBehavior.h>
+#include <Windows/Hotkeys/HotkeyHeroFormation.h>
 #include <Windows/Hotkeys/HotkeyMove.h>
 #include <Windows/Hotkeys/HotkeySendChat.h>
 #include <Windows/Hotkeys/HotkeyTarget.h>
@@ -103,11 +105,17 @@ TBHotkey* TBHotkey::HotkeyFactory(ToolboxIni* ini, const char* section)
     if (type == HotkeyFlagHero::IniSection()) {
         return new HotkeyFlagHero(ini, section);
     }
+    if (type == HotkeyHeroFormation::IniSection()) {
+        return new HotkeyHeroFormation(ini, section);
+    }
     if (type == HotkeyGWKey::IniSection()) {
         return new HotkeyGWKey(ini, section);
     }
     if (type == HotkeyCommandPet::IniSection()) {
         return new HotkeyCommandPet(ini, section);
+    }
+    if (type == HotkeyHeroBehavior::IniSection()) {
+        return new HotkeyHeroBehavior(ini, section);
     }
     return nullptr;
 }

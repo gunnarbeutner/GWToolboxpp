@@ -105,6 +105,7 @@
 #include <Widgets/ExploitableCorpseWidget.h>
 #include <Widgets/FavorTracker.h>
 #include <Widgets/HealthWidget.h>
+#include <Widgets/HotkeyGroupWidget.h>
 #include <Widgets/InventoryOverlayWidget.h>
 #include <Widgets/LatencyWidget.h>
 #include <Widgets/Minimap/Minimap.h>
@@ -230,6 +231,7 @@ namespace {
         ActiveQuestWidget::Instance(),
         TitleTrackerWidget::Instance(),
         BountyKillTrackerWidget::Instance(),
+        HotkeyGroupWidget::Instance(),
         PconsWindow::Instance(),
         HotkeysWindow::Instance(),
         BuildsWindow::Instance(),

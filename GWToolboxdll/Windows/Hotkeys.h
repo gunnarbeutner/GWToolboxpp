@@ -11,6 +11,8 @@
 #include <Windows/Hotkeys/HotkeyFlagHero.h>
 #include <Windows/Hotkeys/HotkeyGroup.h>
 #include <Windows/Hotkeys/HotkeyGWKey.h>
+#include <Windows/Hotkeys/HotkeyHeroBehavior.h>
+#include <Windows/Hotkeys/HotkeyHeroFormation.h>
 #include <Windows/Hotkeys/HotkeyMove.h>
 #include <Windows/Hotkeys/HotkeySendChat.h>
 #include <Windows/Hotkeys/HotkeyTarget.h>

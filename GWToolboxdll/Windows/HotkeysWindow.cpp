@@ -449,11 +449,23 @@ if (ImGui::Selectable("Equip Item")) {
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Flag a hero relative to your position");
             }
+            if (ImGui::Selectable("Hero Formation")) {
+                new_hotkey = new HotkeyHeroFormation(nullptr, nullptr);
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Flag all heroes in a formation relative to your position");
+            }
             if (ImGui::Selectable("Command Pet")) {
                 new_hotkey = new HotkeyCommandPet(nullptr, nullptr);
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Change behavior of your pet");
+            }
+            if (ImGui::Selectable("Hero Behavior")) {
+                new_hotkey = new HotkeyHeroBehavior(nullptr, nullptr);
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Set hero behavior (Fight/Guard/Avoid) silently");
             }
             ImGui::Separator();
             if (ImGui::Selectable("Hotkey Group")) {
