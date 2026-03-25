@@ -47,6 +47,7 @@
 #include <GWCA/Managers/AgentMgr.h>
 #include <ImGuiAddons.h>
 #include <Modules/QuestModule.h>
+#include <Modules/MapAnnotationsModule.h>
 #include <Utils/ArenaNetFileParser.h>
 #include <Utils/TextUtils.h>
 #include <Windows/Pathfinding/PathfindingWindow.h>
@@ -259,6 +260,7 @@ namespace {
         for (const auto& cb : context_menu_callbacks) {
             if (!cb()) return false;
         }
+        if (!MapAnnotationsModule::WorldMapContextMenuItems(world_map_click_pos)) return false;
         return true;
     }
 
@@ -1295,6 +1297,7 @@ void WorldMapWidget::Draw(IDirect3DDevice9*)
     for (const auto cb : overlay_callbacks) {
         cb(draw_list);
     }
+    MapAnnotationsModule::DrawOnWorldMap();
     drawn = true;
 }
 
@@ -1325,6 +1328,7 @@ bool WorldMapWidget::WndProc(const UINT Message, WPARAM, LPARAM lParam)
             }
 
             if (!have_click_pos) break;
+            MapAnnotationsModule::ResetContextMenuState();
             if (hovered_boss) {
                 ImGui::SetContextMenu(EliteBossLocationContextMenu, (void*)hovered_boss);
                 break;

@@ -72,7 +72,7 @@ public:
 
     // Context menu callback system — registered callbacks contribute items to the
     // mission map right-click context menu. Return false to close the menu.
-    using ContextMenuCallback = bool(*)();
+    using ContextMenuCallback = bool(*)(const GW::Vec2f& click_pos);
     static void AddContextMenuCallback(ContextMenuCallback cb);
     static void RemoveContextMenuCallback(ContextMenuCallback cb);
     // World-map coords of the right-click that opened the context menu.

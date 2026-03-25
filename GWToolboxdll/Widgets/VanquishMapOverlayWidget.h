@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ToolboxWidget.h>
+#include <GWCA/GameContainers/GamePos.h>
 
 class VanquishMapOverlayWidget : public ToolboxWidget {
     VanquishMapOverlayWidget()
@@ -49,7 +50,7 @@ public:
     static bool IsOverlayActive();
     static bool IsNavigating();
     static void StopNavigating();
-    static bool ContextMenuItems();
+    static bool ContextMenuItems(const GW::Vec2f& click_pos);
 private:
     void DrawVanquishToggleButton();
 };

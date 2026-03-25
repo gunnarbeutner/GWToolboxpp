@@ -37,6 +37,7 @@
 #include <Modules/GuildWarsSettingsModule.h>
 #include <Modules/ItemTooltipModule.h>
 #include <Modules/LoginModule.h>
+#include <Modules/MapAnnotationsModule.h>
 #ifdef _DEBUG
 #include <Modules/TestHarness.h>
 #endif
@@ -187,6 +188,7 @@ namespace {
         ResignLogModule::Instance(),
         PathfindingWindow::Instance(),
         QuestModule::Instance(),
+        MapAnnotationsModule::Instance(),
 #ifdef _DEBUG
         TestHarness::Instance(),
 #endif

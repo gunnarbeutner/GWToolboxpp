@@ -13,6 +13,7 @@
 
 #include <ImGuiAddons.h>
 #include <Modules/GwDatModule.h>
+#include <Modules/MapAnnotationsModule.h>
 #include <Modules/QuestModule.h>
 #include <Modules/Resources.h>
 #include <Widgets/Minimap/Minimap.h>
@@ -248,7 +249,7 @@ namespace {
             }
         }
         for (const auto& cb : context_menu_callbacks) {
-            if (!cb()) return false;
+            if (!cb(world_map_click_pos)) return false;
         }
 
         return true;
@@ -667,6 +668,8 @@ void MissionMapWidget::Draw(IDirect3DDevice9* dx_device)
     }
     draw_list->PopClipRect();
     #endif
+
+    MapAnnotationsModule::DrawOnMissionMap();
 }
 
 void MissionMapWidget::Update(float)
@@ -759,6 +762,7 @@ bool MissionMapWidget::WndProc(const UINT Message, WPARAM, LPARAM lParam)
             if (!mission_map_frame) break;
             if (GW::UI::GetCurrentTooltip()) break;
             world_map_click_pos = ScreenPosToMissionMapCoords(cursor_pos);
+            MapAnnotationsModule::ResetContextMenuState();
             ImGui::SetContextMenu(MissionMapContextMenu);
         } break;
 

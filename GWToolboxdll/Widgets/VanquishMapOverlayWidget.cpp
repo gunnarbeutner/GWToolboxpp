@@ -15,6 +15,7 @@
 #include <D3DContainers.h>
 #include <Defines.h>
 #include <Timer.h>
+#include <Modules/MapAnnotationsModule.h>
 #include <Modules/QuestModule.h>
 #include <Modules/Resources.h>
 #include <Utils/ToolboxUtils.h>
@@ -765,6 +766,7 @@ namespace {
         for (size_t i = 0, len = std::min(tracked_enemies_by_agent_id.size(), highest_trackable_agent_id + 1); i < len; i++) {
             auto& enemy = tracked_enemies_by_agent_id[i];
             if (enemy.state == EnemyState::NotApplicable) continue;
+            if (MapAnnotationsModule::IsAgentAnnotated(static_cast<uint32_t>(i))) continue;
             const DWORD color = enemy.state == EnemyState::Stale ? settings.vq_color_enemy_stale : settings.vq_color_enemy_alive;
             teardrop_fill.SetColor(color);
             teardrop_fill.SetCenterColor(color);
@@ -1032,7 +1034,7 @@ void VanquishMapOverlayWidget::DrawSettingsInternal()
     if (rebuild_compass) RebuildCompassCircle();
 }
 
-bool VanquishMapOverlayWidget::ContextMenuItems()
+bool VanquishMapOverlayWidget::ContextMenuItems(const GW::Vec2f&)
 {
     if (!Instance().visible || !ToolboxUtils::IsExplorable()) return true;
     if (nav_active) {
