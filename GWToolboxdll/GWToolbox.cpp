@@ -100,6 +100,9 @@ namespace {
         }();
         return static_cast<uint64_t>(ticks * 1000000 / freq.QuadPart);
     }
+
+    HANDLE hot_reload_event = nullptr;
+
     std::recursive_mutex module_management_mutex;
 
 
@@ -805,6 +808,11 @@ DWORD __stdcall GWToolbox::MainLoop(LPVOID module) noexcept
         Sleep(160);
 
         UnloadGWCADll();
+
+        if (hot_reload_event) {
+            CloseHandle(hot_reload_event);
+            hot_reload_event = nullptr;
+        }
     } __except (EXCEPT_EXPRESSION_ENTRY) {
         Log::Log("SafeThreadEntry __except body\n");
     }
@@ -839,6 +847,10 @@ void GWToolbox::Initialize(LPVOID module)
     // instead, so every registration is serialised against packet dispatch.
     pending_detach_dll = false;
     AttachGameLoopCallback();
+
+    if (!hot_reload_event) {
+        hot_reload_event = CreateEventA(nullptr, TRUE, FALSE, "GWToolboxHotReload");
+    }
 }
 
 std::filesystem::path GWToolbox::LoadSettings()
@@ -1044,6 +1056,13 @@ void GWToolbox::Update(GW::HookStatus*)
             break;
         default:
             return;
+    }
+
+    // Check for hot reload signal
+    if (hot_reload_event && WaitForSingleObject(hot_reload_event, 0) == WAIT_OBJECT_0) {
+        Log::Info("Hot reload requested, unloading...");
+        SignalTerminate();
+        return;
     }
 
     UpdateModulesTerminating(delta_f);
