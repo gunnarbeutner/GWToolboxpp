@@ -8,6 +8,7 @@
 #include <GWCA/GameEntities/Camera.h>
 #include <GWCA/Packets/StoC.h>
 
+
 #include <GWCA/GameEntities/Agent.h>
 #include <GWCA/GameEntities/Hero.h>
 #include <GWCA/GameEntities/Party.h>

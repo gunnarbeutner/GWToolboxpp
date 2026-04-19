@@ -137,10 +137,6 @@ public:
     // Check if an agent is being tracked by a map annotation
     static bool IsAgentAnnotated(uint32_t agent_id);
 
-    // Called by WorldMapWidget during its Draw pass
-    static void DrawOnWorldMap();
-    // Called by MissionMapWidget during its Draw pass
-    static void DrawOnMissionMap();
 
     // Check if an annotation is hovered and show its context menu if so.
     // Returns true if a context menu was shown (caller should break).

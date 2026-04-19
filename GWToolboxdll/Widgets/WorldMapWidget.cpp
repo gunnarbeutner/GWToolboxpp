@@ -1297,7 +1297,6 @@ void WorldMapWidget::Draw(IDirect3DDevice9*)
     for (const auto cb : overlay_callbacks) {
         cb(draw_list);
     }
-    MapAnnotationsModule::DrawOnWorldMap();
     drawn = true;
 }
 

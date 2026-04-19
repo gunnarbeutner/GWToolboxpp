@@ -26,9 +26,14 @@
 #include <Utils/TextUtils.h>
 #include <Utils/ToolboxUtils.h>
 #include <Utils/GuiUtils.h>
+#include <Utils/Compositor.h>
 #include <Widgets/MissionMapWidget.h>
 #include <Widgets/WorldMapWidget.h>
 #include <Windows/Pathfinding/PathfindingWindow.h>
+
+// Forward declarations for overlay callbacks registered in Initialize
+static void DrawWorldMapOverlay(ImDrawList& draw_list);
+static void DrawMissionMapOverlay(ImDrawList& draw_list);
 
 namespace {
 
@@ -467,7 +472,7 @@ namespace {
     // Draw small direction chevrons along a route segment (screen coords)
     // Draw direction arrow if enough distance has accumulated since the last one.
     // `accum` tracks screen-pixel distance since the last arrow; updated in place.
-    void DrawDirectionArrow(ImDrawList* draw_list, const ImVec2& p1, const ImVec2& p2, ImU32 color, float scale, float& accum)
+    void DrawDirectionArrow(ImDrawList& draw_list, const ImVec2& p1, const ImVec2& p2, ImU32 color, float scale, float& accum)
     {
         const float dx = p2.x - p1.x;
         const float dy = p2.y - p1.y;
@@ -492,7 +497,7 @@ namespace {
         const ImVec2 tip = {mid.x + ux * size, mid.y + uy * size};
         const ImVec2 left = {mid.x - ux * size * 0.5f + px * size * 0.6f, mid.y - uy * size * 0.5f + py * size * 0.6f};
         const ImVec2 right = {mid.x - ux * size * 0.5f - px * size * 0.6f, mid.y - uy * size * 0.5f - py * size * 0.6f};
-        draw_list->AddTriangleFilled(tip, left, right, arrow_color);
+        draw_list.AddTriangleFilled(tip, left, right, arrow_color);
     }
 
     // Find closest waypoint index to a screen position. Returns -1 if none within threshold.
@@ -995,6 +1000,9 @@ void MapAnnotationsModule::Initialize()
         });
 
     MissionMapWidget::AddContextMenuCallback(&MapAnnotationsModule::WorldMapContextMenuItems);
+
+    Compositor::RegisterImGuiOverlay(nullptr, DrawWorldMapOverlay, 1);
+    Compositor::RegisterImGuiOverlay(L"MapWindow", DrawMissionMapOverlay, 1);
 }
 
 void MapAnnotationsModule::Terminate()
@@ -2370,18 +2378,14 @@ bool MapAnnotationsModule::IsAgentAnnotated(uint32_t agent_id)
     return false;
 }
 
-void MapAnnotationsModule::DrawOnWorldMap()
+static void DrawWorldMapOverlay(ImDrawList& draw_list)
 {
     if (!initialized) return;
     const auto world_map_context = GW::Map::GetWorldMapContext();
     if (!world_map_context) return;
-    // Skip during zoom animation — values are transitional and produce wrong positions
     if (world_map_context->zoom != 1.0f && world_map_context->zoom != 0.0f) return;
 
     const auto viewport = ImGui::GetMainViewport();
-    auto* draw_list = ImGui::GetBackgroundDrawList(viewport);
-    if (!draw_list) return;
-
     const auto* wm_frame = GW::UI::GetFrameById(world_map_context->frame_id);
     if (!wm_frame) return;
 
@@ -2444,7 +2448,7 @@ void MapAnnotationsModule::DrawOnWorldMap()
             for (size_t i = 0; i < route.waypoints.size() - 1; i++) {
                 const auto p1 = to_screen(route.waypoints[i]);
                 const auto p2 = to_screen(route.waypoints[i + 1]);
-                draw_list->AddLine(p1, p2, route_draw_color, route_draw_thickness);
+                draw_list.AddLine(p1, p2, route_draw_color, route_draw_thickness);
                 if (route.show_direction) {
                     DrawDirectionArrow(draw_list, p1, p2, route_draw_color, ui_scale.x, arrow_accum);
                 }
@@ -2456,7 +2460,7 @@ void MapAnnotationsModule::DrawOnWorldMap()
             if (route.loop && route.waypoints.size() > 2) {
                 const auto p1 = to_screen(route.waypoints.back());
                 const auto p2 = to_screen(route.waypoints.front());
-                draw_list->AddLine(p1, p2, route_draw_color, route_draw_thickness);
+                draw_list.AddLine(p1, p2, route_draw_color, route_draw_thickness);
                 if (route.show_direction) {
                     DrawDirectionArrow(draw_list, p1, p2, route_draw_color, ui_scale.x, arrow_accum);
                 }
@@ -2470,8 +2474,8 @@ void MapAnnotationsModule::DrawOnWorldMap()
                 const auto label_pos = to_screen(route.waypoints[0]);
                 const ImVec2 text_pos = {label_pos.x + 6.f, label_pos.y - 6.f};
                 const auto text_size = ImGui::CalcTextSize(route.label.c_str());
-                draw_list->AddRectFilled({text_pos.x - 2.f, text_pos.y - 1.f}, {text_pos.x + text_size.x + 2.f, text_pos.y + text_size.y + 1.f}, IM_COL32(0, 0, 0, 180));
-                draw_list->AddText(text_pos, route.color, route.label.c_str());
+                draw_list.AddRectFilled({text_pos.x - 2.f, text_pos.y - 1.f}, {text_pos.x + text_size.x + 2.f, text_pos.y + text_size.y + 1.f}, IM_COL32(0, 0, 0, 180));
+                draw_list.AddText(text_pos, route.color, route.label.c_str());
             }
 
             if (route_hovered && show_context_menu_edit && !mouse_held) {
@@ -2487,8 +2491,8 @@ void MapAnnotationsModule::DrawOnWorldMap()
                         const float node_radius = 4.0f * ui_scale.x;
                         const bool is_hovered_node = (static_cast<int>(wi) == hovered_waypoint_idx);
                         const auto wp_screen = to_screen(route.waypoints[wi]);
-                        draw_list->AddCircleFilled(wp_screen, node_radius, is_hovered_node ? IM_COL32(255, 255, 0, 255) : IM_COL32(255, 255, 255, 200));
-                        draw_list->AddCircle(wp_screen, node_radius, IM_COL32(0, 0, 0, 200), 0, 1.0f);
+                        draw_list.AddCircleFilled(wp_screen, node_radius, is_hovered_node ? IM_COL32(255, 255, 0, 255) : IM_COL32(255, 255, 255, 200));
+                        draw_list.AddCircle(wp_screen, node_radius, IM_COL32(0, 0, 0, 200), 0, 1.0f);
                     }
 
                     if (hovered_waypoint_idx >= 0) {
@@ -2531,16 +2535,16 @@ void MapAnnotationsModule::DrawOnWorldMap()
             if (!use_icon.empty()) {
                 const auto icon_size = ImGui::CalcTextSize(use_icon.c_str());
                 const ImVec2 icon_pos = {screen_pos.x - icon_size.x * 0.5f, screen_pos.y - icon_size.y * 0.5f};
-                draw_list->AddRectFilled(
+                draw_list.AddRectFilled(
                     {icon_pos.x - 2.f, icon_pos.y - 1.f},
                     {icon_pos.x + icon_size.x + 2.f, icon_pos.y + icon_size.y + 1.f},
                     IM_COL32(0, 0, 0, 180));
-                draw_list->AddText(icon_pos, use_color, use_icon.c_str());
+                draw_list.AddText(icon_pos, use_color, use_icon.c_str());
                 hit_radius = std::max(icon_size.x, icon_size.y) * 0.5f + 4.f;
             }
             else {
-                draw_list->AddCircleFilled(screen_pos, radius, use_color);
-                draw_list->AddCircle(screen_pos, radius, IM_COL32(0, 0, 0, 180), 0, 1.0f);
+                draw_list.AddCircleFilled(screen_pos, radius, use_color);
+                draw_list.AddCircle(screen_pos, radius, IM_COL32(0, 0, 0, 180), 0, 1.0f);
             }
 
             // Determine display name: detected NPC > decoded enc_name > group name > label
@@ -2565,11 +2569,11 @@ void MapAnnotationsModule::DrawOnWorldMap()
                 const ImVec2 label_min = {text_pos.x - 2.f, text_pos.y - 1.f};
                 const ImVec2 label_max = {text_pos.x + text_size.x + 2.f, text_pos.y + text_size.y + 1.f};
                 label_right_x = label_max.x;
-                draw_list->AddRectFilled(label_min, label_max, IM_COL32(0, 0, 0, 180));
-                draw_list->AddText(text_pos, use_color, display_name);
+                draw_list.AddRectFilled(label_min, label_max, IM_COL32(0, 0, 0, 180));
+                draw_list.AddText(text_pos, use_color, display_name);
                 if (marker.detected_dead) {
                     const float strike_y = text_pos.y + text_size.y * 0.5f;
-                    draw_list->AddLine({text_pos.x, strike_y}, {text_pos.x + text_size.x, strike_y}, use_color, 1.0f);
+                    draw_list.AddLine({text_pos.x, strike_y}, {text_pos.x + text_size.x, strike_y}, use_color, 1.0f);
                 }
                 label_hovered = mouse.x >= label_min.x && mouse.x <= label_max.x
                     && mouse.y >= label_min.y && mouse.y <= label_max.y;
@@ -2588,12 +2592,12 @@ void MapAnnotationsModule::DrawOnWorldMap()
                         const ImVec2 bar_min = {bar_left, bar_y};
                         const ImVec2 bar_max = {label_right_x, bar_y + bar_h};
                         const ImVec2 fill_max = {bar_left + bar_w * living->hp, bar_y + bar_h};
-                        draw_list->AddRectFilled(bar_min, bar_max, IM_COL32(0, 0, 0, 160));
+                        draw_list.AddRectFilled(bar_min, bar_max, IM_COL32(0, 0, 0, 160));
                         const ImU32 hp_color = living->hp > 0.5f
                             ? IM_COL32(0, 200, 0, 200)
                             : (living->hp > 0.25f ? IM_COL32(200, 200, 0, 200) : IM_COL32(200, 0, 0, 200));
-                        draw_list->AddRectFilled(bar_min, fill_max, hp_color);
-                        draw_list->AddRect(bar_min, bar_max, IM_COL32(0, 0, 0, 200));
+                        draw_list.AddRectFilled(bar_min, fill_max, hp_color);
+                        draw_list.AddRect(bar_min, bar_max, IM_COL32(0, 0, 0, 200));
                     }
                 }
             }
@@ -2676,12 +2680,12 @@ void MapAnnotationsModule::DrawOnWorldMap()
                     ? IM_COL32(100, 255, 100, 120)
                     : IM_COL32(255, 200, 50, 120);
 
-                draw_list->AddCircleFilled(center, screen_radius, zone_color, 32);
-                draw_list->AddCircle(center, screen_radius, border_color, 32, 1.5f);
+                draw_list.AddCircleFilled(center, screen_radius, zone_color, 32);
+                draw_list.AddCircle(center, screen_radius, border_color, 32, 1.5f);
 
                 if (!trigger.label.empty()) {
                     const auto label_size = ImGui::CalcTextSize(trigger.label.c_str());
-                    draw_list->AddText(
+                    draw_list.AddText(
                         {center.x - label_size.x * 0.5f, center.y - label_size.y * 0.5f},
                         border_color, trigger.label.c_str());
                 }
@@ -2694,11 +2698,11 @@ void MapAnnotationsModule::DrawOnWorldMap()
         for (size_t i = 0; i < pending_route.waypoints.size() - 1; i++) {
             const auto p1 = to_screen(pending_route.waypoints[i]);
             const auto p2 = to_screen(pending_route.waypoints[i + 1]);
-            draw_list->AddLine(p1, p2, pending_route.color, pending_route.thickness);
+            draw_list.AddLine(p1, p2, pending_route.color, pending_route.thickness);
         }
         for (const auto& wp : pending_route.waypoints) {
             const auto sp = to_screen(wp);
-            draw_list->AddCircleFilled(sp, 4.0f * ui_scale.x, pending_route.color);
+            draw_list.AddCircleFilled(sp, 4.0f * ui_scale.x, pending_route.color);
         }
     }
 
@@ -2707,7 +2711,7 @@ void MapAnnotationsModule::DrawOnWorldMap()
         for (size_t i = 0; i < recording_route_data.waypoints.size() - 1; i++) {
             const auto p1 = to_screen(recording_route_data.waypoints[i]);
             const auto p2 = to_screen(recording_route_data.waypoints[i + 1]);
-            draw_list->AddLine(p1, p2, recording_route_data.color, recording_route_data.thickness);
+            draw_list.AddLine(p1, p2, recording_route_data.color, recording_route_data.thickness);
         }
     }
 
@@ -2716,23 +2720,18 @@ void MapAnnotationsModule::DrawOnWorldMap()
         moving_waypoint_idx < static_cast<int>(moving_route->waypoints.size())) {
         // Draw the node being moved as a pulsing circle at its current position
         const auto node_screen = to_screen(moving_route->waypoints[moving_waypoint_idx]);
-        draw_list->AddCircleFilled(node_screen, 6.0f * ui_scale.x, IM_COL32(255, 255, 0, 180));
-        draw_list->AddCircle(node_screen, 6.0f * ui_scale.x, IM_COL32(255, 255, 0, 255), 0, 2.0f);
+        draw_list.AddCircleFilled(node_screen, 6.0f * ui_scale.x, IM_COL32(255, 255, 0, 180));
+        draw_list.AddCircle(node_screen, 6.0f * ui_scale.x, IM_COL32(255, 255, 0, 255), 0, 2.0f);
         // Draw a line from the node to the cursor
-        draw_list->AddLine(node_screen, mouse, IM_COL32(255, 255, 0, 150), 1.0f);
+        draw_list.AddLine(node_screen, mouse, IM_COL32(255, 255, 0, 150), 1.0f);
     }
 }
 
-void MapAnnotationsModule::DrawOnMissionMap()
+static void DrawMissionMapOverlay(ImDrawList& draw_list)
 {
     if (!initialized) return;
     const auto mission_map_context = GW::Map::GetMissionMapContext();
     if (!mission_map_context) return;
-
-    const auto viewport = ImGui::GetMainViewport();
-    auto* draw_list = ImGui::GetBackgroundDrawList(viewport);
-    if (!draw_list) return;
-
     const auto gameplay_context = GW::GetGameplayContext();
     const auto mission_map_frame = mission_map_context ? GW::UI::GetFrameById(mission_map_context->frame_id) : nullptr;
     if (!(gameplay_context && mission_map_frame && mission_map_frame->IsVisible())) return;
@@ -2804,7 +2803,7 @@ void MapAnnotationsModule::DrawOnMissionMap()
             for (size_t i = 0; i < route.waypoints.size() - 1; i++) {
                 const auto p1 = world_to_mm_screen(route.waypoints[i]);
                 const auto p2 = world_to_mm_screen(route.waypoints[i + 1]);
-                draw_list->AddLine(p1, p2, mm_route_color, mm_route_thickness);
+                draw_list.AddLine(p1, p2, mm_route_color, mm_route_thickness);
                 if (route.show_direction) {
                     DrawDirectionArrow(draw_list, p1, p2, mm_route_color, mm_scale.x, mm_arrow_accum);
                 }
@@ -2815,7 +2814,7 @@ void MapAnnotationsModule::DrawOnMissionMap()
             if (route.loop && route.waypoints.size() > 2) {
                 const auto p1 = world_to_mm_screen(route.waypoints.back());
                 const auto p2 = world_to_mm_screen(route.waypoints.front());
-                draw_list->AddLine(p1, p2, mm_route_color, mm_route_thickness);
+                draw_list.AddLine(p1, p2, mm_route_color, mm_route_thickness);
                 if (route.show_direction) {
                     DrawDirectionArrow(draw_list, p1, p2, mm_route_color, mm_scale.x, mm_arrow_accum);
                 }
@@ -2828,8 +2827,8 @@ void MapAnnotationsModule::DrawOnMissionMap()
                 const auto label_pos = world_to_mm_screen(route.waypoints[0]);
                 const ImVec2 text_pos = {label_pos.x + 6.f, label_pos.y - 6.f};
                 const auto text_size = ImGui::CalcTextSize(route.label.c_str());
-                draw_list->AddRectFilled({text_pos.x - 2.f, text_pos.y - 1.f}, {text_pos.x + text_size.x + 2.f, text_pos.y + text_size.y + 1.f}, IM_COL32(0, 0, 0, 180));
-                draw_list->AddText(text_pos, route.color, route.label.c_str());
+                draw_list.AddRectFilled({text_pos.x - 2.f, text_pos.y - 1.f}, {text_pos.x + text_size.x + 2.f, text_pos.y + text_size.y + 1.f}, IM_COL32(0, 0, 0, 180));
+                draw_list.AddText(text_pos, route.color, route.label.c_str());
             }
 
             if (route_hovered && show_context_menu_edit && !mouse_held) {
@@ -2844,8 +2843,8 @@ void MapAnnotationsModule::DrawOnMissionMap()
                         const auto wp_screen = world_to_mm_screen(route.waypoints[wi]);
                         const float node_radius = 4.0f * mm_scale.x;
                         const bool is_hovered_node = (static_cast<int>(wi) == mm_hovered_waypoint_idx);
-                        draw_list->AddCircleFilled(wp_screen, node_radius, is_hovered_node ? IM_COL32(255, 255, 0, 255) : IM_COL32(255, 255, 255, 200));
-                        draw_list->AddCircle(wp_screen, node_radius, IM_COL32(0, 0, 0, 200), 0, 1.0f);
+                        draw_list.AddCircleFilled(wp_screen, node_radius, is_hovered_node ? IM_COL32(255, 255, 0, 255) : IM_COL32(255, 255, 255, 200));
+                        draw_list.AddCircle(wp_screen, node_radius, IM_COL32(0, 0, 0, 200), 0, 1.0f);
                     }
 
                     if (mm_hovered_waypoint_idx >= 0) {
@@ -2887,16 +2886,16 @@ void MapAnnotationsModule::DrawOnMissionMap()
             if (!use_icon.empty()) {
                 const auto icon_size = ImGui::CalcTextSize(use_icon.c_str());
                 const ImVec2 icon_pos = {screen_pos.x - icon_size.x * 0.5f, screen_pos.y - icon_size.y * 0.5f};
-                draw_list->AddRectFilled(
+                draw_list.AddRectFilled(
                     {icon_pos.x - 2.f, icon_pos.y - 1.f},
                     {icon_pos.x + icon_size.x + 2.f, icon_pos.y + icon_size.y + 1.f},
                     IM_COL32(0, 0, 0, 180));
-                draw_list->AddText(icon_pos, use_color, use_icon.c_str());
+                draw_list.AddText(icon_pos, use_color, use_icon.c_str());
                 hit_radius = std::max(icon_size.x, icon_size.y) * 0.5f + 4.f;
             }
             else {
-                draw_list->AddCircleFilled(screen_pos, radius, use_color);
-                draw_list->AddCircle(screen_pos, radius, IM_COL32(0, 0, 0, 180), 0, 1.0f);
+                draw_list.AddCircleFilled(screen_pos, radius, use_color);
+                draw_list.AddCircle(screen_pos, radius, IM_COL32(0, 0, 0, 180), 0, 1.0f);
             }
 
             const char* display_name = "";
@@ -2920,11 +2919,11 @@ void MapAnnotationsModule::DrawOnMissionMap()
                 const ImVec2 label_min = {text_pos.x - 2.f, text_pos.y - 1.f};
                 const ImVec2 label_max = {text_pos.x + text_size.x + 2.f, text_pos.y + text_size.y + 1.f};
                 label_right_x = label_max.x;
-                draw_list->AddRectFilled(label_min, label_max, IM_COL32(0, 0, 0, 180));
-                draw_list->AddText(text_pos, use_color, display_name);
+                draw_list.AddRectFilled(label_min, label_max, IM_COL32(0, 0, 0, 180));
+                draw_list.AddText(text_pos, use_color, display_name);
                 if (marker.detected_dead) {
                     const float strike_y = text_pos.y + text_size.y * 0.5f;
-                    draw_list->AddLine({text_pos.x, strike_y}, {text_pos.x + text_size.x, strike_y}, use_color, 1.0f);
+                    draw_list.AddLine({text_pos.x, strike_y}, {text_pos.x + text_size.x, strike_y}, use_color, 1.0f);
                 }
                 label_hovered = mouse.x >= label_min.x && mouse.x <= label_max.x
                     && mouse.y >= label_min.y && mouse.y <= label_max.y;
@@ -2943,12 +2942,12 @@ void MapAnnotationsModule::DrawOnMissionMap()
                         const ImVec2 bar_min = {bar_left, bar_y};
                         const ImVec2 bar_max = {label_right_x, bar_y + bar_h};
                         const ImVec2 fill_max = {bar_left + bar_w * living->hp, bar_y + bar_h};
-                        draw_list->AddRectFilled(bar_min, bar_max, IM_COL32(0, 0, 0, 160));
+                        draw_list.AddRectFilled(bar_min, bar_max, IM_COL32(0, 0, 0, 160));
                         const ImU32 hp_color = living->hp > 0.5f
                             ? IM_COL32(0, 200, 0, 200)
                             : (living->hp > 0.25f ? IM_COL32(200, 200, 0, 200) : IM_COL32(200, 0, 0, 200));
-                        draw_list->AddRectFilled(bar_min, fill_max, hp_color);
-                        draw_list->AddRect(bar_min, bar_max, IM_COL32(0, 0, 0, 200));
+                        draw_list.AddRectFilled(bar_min, fill_max, hp_color);
+                        draw_list.AddRect(bar_min, bar_max, IM_COL32(0, 0, 0, 200));
                     }
                 }
             }
@@ -3031,12 +3030,12 @@ void MapAnnotationsModule::DrawOnMissionMap()
                     ? IM_COL32(100, 255, 100, 120)
                     : IM_COL32(255, 200, 50, 120);
 
-                draw_list->AddCircleFilled(center, screen_radius, zone_color, 32);
-                draw_list->AddCircle(center, screen_radius, border_color, 32, 1.5f);
+                draw_list.AddCircleFilled(center, screen_radius, zone_color, 32);
+                draw_list.AddCircle(center, screen_radius, border_color, 32, 1.5f);
 
                 if (!trigger.label.empty()) {
                     const auto label_size = ImGui::CalcTextSize(trigger.label.c_str());
-                    draw_list->AddText(
+                    draw_list.AddText(
                         {center.x - label_size.x * 0.5f, center.y - label_size.y * 0.5f},
                         border_color, trigger.label.c_str());
                 }
@@ -3049,11 +3048,11 @@ void MapAnnotationsModule::DrawOnMissionMap()
         for (size_t i = 0; i < pending_route.waypoints.size() - 1; i++) {
             const auto p1 = world_to_mm_screen(pending_route.waypoints[i]);
             const auto p2 = world_to_mm_screen(pending_route.waypoints[i + 1]);
-            draw_list->AddLine(p1, p2, pending_route.color, pending_route.thickness);
+            draw_list.AddLine(p1, p2, pending_route.color, pending_route.thickness);
         }
         for (const auto& wp : pending_route.waypoints) {
             const auto sp = world_to_mm_screen(wp);
-            draw_list->AddCircleFilled(sp, 4.0f * mm_scale.x, pending_route.color);
+            draw_list.AddCircleFilled(sp, 4.0f * mm_scale.x, pending_route.color);
         }
     }
 
@@ -3062,11 +3061,11 @@ void MapAnnotationsModule::DrawOnMissionMap()
         for (size_t i = 0; i < recording_route_data.waypoints.size() - 1; i++) {
             const auto p1 = world_to_mm_screen(recording_route_data.waypoints[i]);
             const auto p2 = world_to_mm_screen(recording_route_data.waypoints[i + 1]);
-            draw_list->AddLine(p1, p2, recording_route_data.color, recording_route_data.thickness);
+            draw_list.AddLine(p1, p2, recording_route_data.color, recording_route_data.thickness);
         }
     }
-
 }
+
 
 bool MapAnnotationsModule::ShowAnnotationContextMenu()
 {
