@@ -64,23 +64,6 @@ namespace Compositor {
     static FrCacheRenderFn FrCacheRenderAll_Original = nullptr;
     static FrCacheRenderFn FrCacheRenderAll_Trampoline = nullptr;
 
-    // FrCache_FlushRenderModels — hooked to record z-transition buffer positions.
-    // Called by BuildRenderList at z-transitions and viewport changes.
-    // We distinguish z-transitions by checking the return address: the
-    // z-transition CALL in BuildRenderList has a unique return address that
-    // differs from viewport-change and end-of-loop flush calls.
-    using FrCacheFlushModelsFn = void(__cdecl*)(uint32_t, void*);
-    static FrCacheFlushModelsFn FrCacheFlushModels_Original = nullptr;
-    static FrCacheFlushModelsFn FrCacheFlushModels_Trampoline = nullptr;
-    static uintptr_t s_ZTransitionRetAddr = 0;
-
-    // Z-transition recording: filled by FlushRenderModels hook, used by RenderAll.
-    // Each entry records the buffer position AFTER the flush (where the new z's
-    // entries will begin) and the new z-value read from BuildRenderList's stack.
-    struct ZTransition { uint32_t buf_pos; uint32_t new_z; };
-    static std::vector<ZTransition> s_z_transitions;
-    static bool s_z_transitions_cleared_this_frame = false;
-
     // Internal functions called by FrCache_RenderAll — we call these directly
     // to re-implement the buffer processing with TB injection points.
     using FrCacheRenderEntryFn = void(__cdecl*)(int*, uint32_t, int*, uint32_t);
@@ -403,50 +386,6 @@ namespace Compositor {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // FlushRenderModels hook — records z-transition buffer positions
-    // -----------------------------------------------------------------------
-    // BuildRenderList calls FlushRenderModels at z-transitions AND viewport
-    // changes. We distinguish them by checking the return address: the
-    // z-transition CALL is at a specific offset in BuildRenderList (found
-    // during scanning). At that call site, BuildRenderList has already stored
-    // the new z in its local variable at [EBP - 0x28]. We read it directly
-    // from the caller's stack frame.
-
-    void __cdecl FrCacheFlushModels_Hook(uint32_t model_group_count, void* model_buffer)
-    {
-        GW::Hook::EnterHook();
-
-        // Read return address and caller's EBP from our stack frame.
-        // With MinHook's JMP-based hook, our stack frame sits directly
-        // above BuildRenderList's CALL:
-        //   [EBP+0] = saved EBP (= BuildRenderList's EBP, preserved through JMP)
-        //   [EBP+4] = return address (after the CALL in BuildRenderList)
-        auto ret_addr = reinterpret_cast<uintptr_t>(_ReturnAddress());
-        bool is_z_transition = (ret_addr == s_ZTransitionRetAddr);
-
-        uint32_t new_z = 0;
-        if (is_z_transition) {
-            // Read new_z from BuildRenderList's local_2c at [caller_EBP - 0x28].
-            // The caller's EBP was saved by our prologue (it's our [EBP+0]).
-            auto addr_of_ret = reinterpret_cast<uintptr_t*>(_AddressOfReturnAddress());
-            auto caller_ebp = addr_of_ret[-1]; // saved EBP = BuildRenderList's EBP
-            new_z = *reinterpret_cast<uint32_t*>(caller_ebp - 0x28);
-        }
-
-        FrCacheFlushModels_Trampoline(model_group_count, model_buffer);
-
-        if (is_z_transition && s_RenderBuffer) {
-            if (!s_z_transitions_cleared_this_frame) {
-                s_z_transitions_cleared_this_frame = true;
-                s_z_transitions.clear();
-            }
-            s_z_transitions.push_back({s_RenderBuffer->m_size, new_z});
-        }
-
-        GW::Hook::LeaveHook();
-    }
-
     bool IsPointOccludedByGW(float x, float y, uint64_t tb_z)
     {
         if (tb_z == 0) return false;
@@ -554,9 +493,6 @@ namespace Compositor {
             s_frame_draw_callback(s_device);
         }
 
-        // Reset the z-transition flag for the next frame's BuildRenderList.
-        s_z_transitions_cleared_this_frame = false;
-
         auto& zo = GetUnifiedZOrder();
         const auto& composite = zo.GetCompositeOrder();
 
@@ -584,44 +520,10 @@ namespace Compositor {
         auto& frames = FrameArray();
         auto& secondary = SecondaryArray();
 
-        // Map overlay popup boundaries using z-transition data from the
-        // FlushRenderModels hook. Each z-transition records the exact buffer
-        // position and the new z-value. We match overlay root_z values to
-        // these transitions for precise injection points.
-        // Fallback: POPUP flag (0x20) on viewport entries for overlays that
-        // don't match any z-transition (e.g., when buffer wasn't rebuilt).
-        static std::unordered_map<uint32_t, GW::UI::Frame*> popup_entry_to_composite;
-        popup_entry_to_composite.clear();
-        if (s_OverlayList && s_OverlayList->m_buffer) {
-            auto& overlays = *s_OverlayList;
-            for (uint32_t k = 0; k < overlays.size(); k++) {
-                auto* ol_root = overlays[k];
-                if (!ol_root || !ol_root->field1_0x0) continue;
-                GW::UI::Frame* composite_frame = nullptr;
-                for (const auto& ce : composite) {
-                    if (!ce.is_tb && ce.gw_frame == ol_root) {
-                        composite_frame = ol_root;
-                        break;
-                    }
-                }
-                if (!composite_frame) continue;
-
-                // Find the z-transition that matches this overlay's root_z
-                for (const auto& zt : s_z_transitions) {
-                    if (zt.new_z == ol_root->field1_0x0) {
-                        popup_entry_to_composite.try_emplace(zt.buf_pos, composite_frame);
-                        break;
-                    }
-                }
-            }
-        }
-
         float viewport[4] = {0, 0, 1, 1};
         GW::UI::Frame* current_floating = nullptr;
         static std::vector<bool> tb_drawn;
         tb_drawn.assign(composite.size(), false);
-        static std::unordered_set<GW::UI::Frame*> detected_popups;
-        detected_popups.clear();
         bool base_overlays_rendered = false;
         StateTransition st;
         st.Init(s_device);
@@ -629,36 +531,26 @@ namespace Compositor {
         for (uint32_t i = 0; i < buffer.size(); i++) {
             const auto& entry = buffer[i];
 
-            // Check for popup boundary at ANY entry type (including type-0).
-            // The pre-scan z-transition mapping detects overlay roots even in
-            // type-0 entries. Fallback: POPUP flag on viewport entries.
-            // Skip frames already detected (prevents double-detection when
-            // both pre-scan and POPUP flag match the same overlay).
-            {
-                GW::UI::Frame* popup_frame = nullptr;
-                {
-                    auto it = popup_entry_to_composite.find(i);
-                    if (it != popup_entry_to_composite.end()
-                        && !detected_popups.count(it->second))
-                        popup_frame = it->second;
-                }
-                if (!popup_frame && entry.type != FRCACHE_GPU_RENDER
-                    && entry.index < frames.size()) {
-                    auto* frame = frames[entry.index];
-                    if (frame && (frame->field92_0x190 & 0x20) != 0
-                        && !detected_popups.count(frame))
-                        popup_frame = frame;
-                }
-
-                if (popup_frame && popup_frame != current_floating) {
-                    // Find this popup's z in the composite order
+            // Detect popup/overlay boundaries via the POPUP flag (0x20) on
+            // type 1/2/3 buffer entries.  This flag is stable (doesn't change
+            // between buffer build and render), unlike z-values which the game
+            // may update after the buffer was built.
+            if (entry.type != FRCACHE_GPU_RENDER && entry.index < frames.size()) {
+                auto* frame = frames[entry.index];
+                if (frame && (frame->field92_0x190 & 0x20) != 0
+                    && frame != current_floating) {
+                    // Find this popup frame in the composite order
+                    GW::UI::Frame* popup_frame = nullptr;
                     uint64_t popup_z = UINT64_MAX;
                     for (const auto& ce : composite) {
-                        if (!ce.is_tb && ce.gw_frame == popup_frame) {
+                        if (!ce.is_tb && ce.gw_frame == frame) {
+                            popup_frame = frame;
                             popup_z = ce.z;
                             break;
                         }
                     }
+
+                if (popup_frame) {
 
                     // Before the first popup: render base UI overlays AND any
                     // frame-specific overlays for non-popup frames.
@@ -694,7 +586,7 @@ namespace Compositor {
                     st.EnterGWState();
 
                     current_floating = popup_frame;
-                    detected_popups.insert(popup_frame);
+                }
                 }
             }
 
@@ -816,13 +708,6 @@ namespace Compositor {
             FrCacheRenderAll_Original = nullptr;
             FrCacheRenderAll_Trampoline = nullptr;
         }
-        if (FrCacheFlushModels_Original) {
-            GW::Hook::DisableHooks(FrCacheFlushModels_Original);
-            GW::Hook::RemoveHook(FrCacheFlushModels_Original);
-            FrCacheFlushModels_Original = nullptr;
-            FrCacheFlushModels_Trampoline = nullptr;
-        }
-        s_z_transitions.clear();
         s_frame_draw_callback = nullptr;
         s_hook_failed = false;
         s_RenderBuffer = nullptr;
@@ -961,52 +846,6 @@ namespace Compositor {
         s_ZSortList = reinterpret_cast<GW::Array<GW::UI::Frame*>*>(frame_list_base + 0x40);
         s_OverlayList = reinterpret_cast<GW::Array<GW::UI::Frame*>*>(frame_list_base + 0x50);
 
-        // FrCache_BuildRenderList: the CALL just before FrCache_RenderAll in FrCache_Render
-        // Scan backward from the CALL to RenderAll for the previous E8
-        uintptr_t build_list_addr = 0;
-        for (auto a = render_all_addr - 6; a > render_all_addr - 0x100; a--) {
-            if (*reinterpret_cast<uint8_t*>(a) == 0xE8 &&
-                GW::Scanner::FunctionFromNearCall(a) == render_all_addr) {
-                for (auto b = a - 5; b > a - 0x20; b--) {
-                    if (*reinterpret_cast<uint8_t*>(b) == 0xE8) {
-                        build_list_addr = GW::Scanner::FunctionFromNearCall(b);
-                        break;
-                    }
-                }
-                break;
-            }
-        }
-        if (!build_list_addr) {
-            Log::Warning("Compositor: failed to find BuildRenderList, z-interleaving disabled");
-            s_hook_failed = true;
-            return false;
-        }
-
-        // FrCache_FlushRenderModels: asserts "models" in FrCache.cpp at line 0x75
-        auto flush_models_addr = GW::Scanner::ToFunctionStart(
-            GW::Scanner::FindAssertion("FrCache.cpp", "models", 0x75, 0));
-        if (!flush_models_addr) {
-            Log::Warning("Compositor: failed to find FlushRenderModels, z-interleaving disabled");
-            s_hook_failed = true;
-            return false;
-        }
-
-        // Find the z-transition CALL to FlushRenderModels within BuildRenderList.
-        // In BuildRenderList, the pattern is: CMP EDX,EAX; JZ skip; ...; CALL FlushRenderModels
-        // The FIRST call to FlushRenderModels in BuildRenderList is the z-transition call.
-        for (auto a = build_list_addr; a < build_list_addr + 0x200; a++) {
-            if (*reinterpret_cast<uint8_t*>(a) == 0xE8 &&
-                GW::Scanner::FunctionFromNearCall(a) == flush_models_addr) {
-                s_ZTransitionRetAddr = a + 5; // return address = instruction after CALL
-                break;
-            }
-        }
-        if (!s_ZTransitionRetAddr) {
-            Log::Warning("Compositor: failed to find z-transition return address, z-interleaving disabled");
-            s_hook_failed = true;
-            return false;
-        }
-
         // GrDev_Default: loaded via MOV ESI,[addr] in FrCache_SetViewport
         // (at ~offset 0x6A, in the null render_target path)
         if (FrCacheSetViewport_Fn) {
@@ -1060,20 +899,11 @@ namespace Compositor {
 
         // ---- Install hooks ----
 
-        s_z_transitions.reserve(16);
-
         FrCacheRenderAll_Original = reinterpret_cast<FrCacheRenderFn>(render_all_addr);
         GW::Hook::CreateHook(reinterpret_cast<void**>(&FrCacheRenderAll_Original),
                               FrCacheRenderAll_Hook,
                               reinterpret_cast<void**>(&FrCacheRenderAll_Trampoline));
         GW::Hook::EnableHooks(FrCacheRenderAll_Original);
-
-        // Hook FlushRenderModels to record z-transition buffer positions
-        FrCacheFlushModels_Original = reinterpret_cast<FrCacheFlushModelsFn>(flush_models_addr);
-        GW::Hook::CreateHook(reinterpret_cast<void**>(&FrCacheFlushModels_Original),
-                              FrCacheFlushModels_Hook,
-                              reinterpret_cast<void**>(&FrCacheFlushModels_Trampoline));
-        GW::Hook::EnableHooks(FrCacheFlushModels_Original);
 
         return true;
     }
