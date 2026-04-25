@@ -42,17 +42,10 @@ namespace Compositor {
     // Pointers to GW's Array<T> globals (buffer, capacity, size, param — 16 bytes each)
     static GW::Array<FrCacheBufferEntry>* s_RenderBuffer = nullptr;
     static GW::Array<GW::UI::Frame*>* s_FrameArray = nullptr;
-    static GW::Array<int*>* s_SecondaryArray = nullptr;
-    static GW::Array<GW::UI::Frame*>* s_ZSortList = nullptr; // z-sorted popup container(s)
     static GW::Array<GW::UI::Frame*>* s_OverlayList = nullptr; // overlay/popup root frames
     static void** s_GrDev_Default = nullptr;
 
     static IDirect3DDevice9* s_device = nullptr;
-
-    static GW::Array<FrCacheBufferEntry>& RenderBuffer() { return *s_RenderBuffer; }
-    static GW::Array<GW::UI::Frame*>& FrameArray() { return *s_FrameArray; }
-    static GW::Array<int*>& SecondaryArray() { return *s_SecondaryArray; }
-    static GW::Array<GW::UI::Frame*>& ZSortList() { return *s_ZSortList; }
 
     // -----------------------------------------------------------------------
     // Hook types and state
@@ -64,25 +57,8 @@ namespace Compositor {
     static FrCacheRenderFn FrCacheRenderAll_Original = nullptr;
     static FrCacheRenderFn FrCacheRenderAll_Trampoline = nullptr;
 
-    // Internal functions called by FrCache_RenderAll — we call these directly
-    // to re-implement the buffer processing with TB injection points.
-    using FrCacheRenderEntryFn = void(__cdecl*)(int*, uint32_t, int*, uint32_t);
-    using FrCacheSetViewportFn = void(__cdecl*)(int*, float*);
-    using FramePosGetRectFn = float*(__thiscall*)(void*, float*);
-    using ViewportTransformRectFn = void(__cdecl*)(float*, float*);
-    using FrMsgDispatchFn = void(__fastcall*)(void*, void*, int, void*, uint32_t);
-    using FrameStateTestFlagFn = uint32_t(__thiscall*)(void*, uint32_t);
-
     using GrDevFlushQueuesFn = bool(__fastcall*)(void*);
     static GrDevFlushQueuesFn GrDev_FlushQueues_Fn = nullptr;
-
-    static FrCacheRenderEntryFn FrCacheRenderEntry_Fn = nullptr;
-    static FrCacheSetViewportFn FrCacheSetViewport_Fn = nullptr;
-    static FramePosGetRectFn FramePosGetClientRect_Fn = nullptr;
-    static FramePosGetRectFn FramePosGetFrameRect_Fn = nullptr;
-    static ViewportTransformRectFn ViewportTransformRect_Fn = nullptr;
-    static FrMsgDispatchFn FrMsgDispatch_Fn = nullptr;
-    static FrameStateTestFlagFn FrameStateTestFlag_Fn = nullptr;
 
     // -----------------------------------------------------------------------
     // UnifiedZOrder
@@ -499,7 +475,7 @@ namespace Compositor {
         // Skip z-interleaving when the world map is showing. The world map
         // renders via the ZSort layer which sits above all overlays in the
         // buffer. TB widgets that ShowOnWorldMap() render after all GW content.
-        if (GW::UI::GetIsWorldMapShowing() || composite.empty() || !s_device || !FrCacheRenderEntry_Fn) {
+        if (GW::UI::GetIsWorldMapShowing() || composite.empty() || !s_device) {
             FrCacheRenderAll_Trampoline(param_1, param_2);
             // Still run base-UI overlay callbacks (e.g. world map annotations)
             if (s_device) {
@@ -515,152 +491,99 @@ namespace Compositor {
             return;
         }
 
-        // Process the render buffer entry by entry using proper GW::BaseArray types
-        auto& buffer = RenderBuffer();
-        auto& frames = FrameArray();
-        auto& secondary = SecondaryArray();
+        // Pre-scan the buffer for popup boundaries (POPUP flag on type 1/2/3
+        // entries).  Build a list of {buffer_index, popup_frame, unified_z}
+        // for each boundary where we need to inject TB content.
+        auto& buffer = *s_RenderBuffer;
+        auto& frames = *s_FrameArray;
 
-        float viewport[4] = {0, 0, 1, 1};
-        GW::UI::Frame* current_floating = nullptr;
-        static std::vector<bool> tb_drawn;
-        tb_drawn.assign(composite.size(), false);
-        bool base_overlays_rendered = false;
-        StateTransition st;
-        st.Init(s_device);
+        struct PopupBoundary { uint32_t buf_idx; GW::UI::Frame* frame; uint64_t z; };
+        static std::vector<PopupBoundary> boundaries;
+        boundaries.clear();
+        GW::UI::Frame* last_popup = nullptr;
 
         for (uint32_t i = 0; i < buffer.size(); i++) {
             const auto& entry = buffer[i];
-
-            // Detect popup/overlay boundaries via the POPUP flag (0x20) on
-            // type 1/2/3 buffer entries.  This flag is stable (doesn't change
-            // between buffer build and render), unlike z-values which the game
-            // may update after the buffer was built.
-            if (entry.type != FRCACHE_GPU_RENDER && entry.index < frames.size()) {
-                auto* frame = frames[entry.index];
-                if (frame && (frame->field92_0x190 & 0x20) != 0
-                    && frame != current_floating) {
-                    // Find this popup frame in the composite order
-                    GW::UI::Frame* popup_frame = nullptr;
-                    uint64_t popup_z = UINT64_MAX;
-                    for (const auto& ce : composite) {
-                        if (!ce.is_tb && ce.gw_frame == frame) {
-                            popup_frame = frame;
-                            popup_z = ce.z;
-                            break;
-                        }
-                    }
-
-                if (popup_frame) {
-
-                    // Before the first popup: render base UI overlays AND any
-                    // frame-specific overlays for non-popup frames.
-                    if (!base_overlays_rendered && s_device) {
-                        base_overlays_rendered = true;
-                        RunOverlayCallbacks(st, [](OverlayCallbackEntry& cb) {
-                            if (!cb.gw_frame_label) return true; // base UI
-                            bool is_popup = cb.resolved_frame &&
-                                (cb.resolved_frame->field92_0x190 & 0x20);
-                            return !is_popup; // non-popup overlays render with base UI
-                        });
-                    }
-
-                    // Render callbacks for the PREVIOUS popup (its content just finished)
-                    if (current_floating && s_device) {
-                        RunOverlayCallbacks(st, [current_floating](OverlayCallbackEntry& cb) {
-                            return cb.resolved_frame == current_floating;
-                        });
-                    }
-
-                    // Render TB windows with z < popup_z directly to the backbuffer
-                    if (s_device) {
-                        for (size_t ci = 0; ci < composite.size(); ci++) {
-                            if (tb_drawn[ci] || !composite[ci].is_tb || composite[ci].z >= popup_z)
-                                continue;
-                            st.EnterTBState();
-                            RenderTBWindowDirect(s_device, composite[ci].tb_name);
-                            tb_drawn[ci] = true;
-                        }
-                    }
-
-                    // Restore GW state before processing more buffer entries
-                    st.EnterGWState();
-
-                    current_floating = popup_frame;
+            if (entry.type == FRCACHE_GPU_RENDER || entry.index >= frames.size()) continue;
+            auto* frame = frames[entry.index];
+            if (!frame || !(frame->field92_0x190 & 0x20) || frame == last_popup) continue;
+            // Find this popup frame in the composite order
+            for (const auto& ce : composite) {
+                if (!ce.is_tb && ce.gw_frame == frame) {
+                    boundaries.push_back({i, frame, ce.z});
+                    last_popup = frame;
+                    break;
                 }
-                }
-            }
-
-            // Process the entry using GW's internal functions
-            switch (entry.type) {
-            case FRCACHE_GPU_RENDER: {
-                auto* models = reinterpret_cast<int*>(&secondary[entry.index]);
-                FrCacheRenderEntry_Fn(nullptr, entry.param, models, 1);
-                break;
-            }
-            case FRCACHE_FRAME_CALLBACK: {
-                if (entry.index < frames.size()) {
-                    auto* frame = frames[entry.index];
-                    if (frame) {
-                        auto* state_ptr = reinterpret_cast<void*>(
-                            reinterpret_cast<uintptr_t>(frame) + 0x18C);
-                        if (FrameStateTestFlag_Fn(state_ptr, 0x1000) == 0) {
-                            uint32_t params[6];
-                            params[0] = param_2;
-                            memcpy(&params[1], viewport, sizeof(viewport));
-                            params[5] = param_1;
-                            auto* callbacks = reinterpret_cast<void*>(
-                                reinterpret_cast<uintptr_t>(frame) + 0xA8);
-                            FrMsgDispatch_Fn(callbacks, nullptr, 0x35, params, 0);
-                        }
-                    }
-                }
-                break;
-            }
-            case FRCACHE_CLIENT_VIEWPORT: {
-                if (entry.index < frames.size()) {
-                    auto* frame = frames[entry.index];
-                    if (frame) {
-                        float rect[4], transformed[4];
-                        auto* pos = reinterpret_cast<void*>(
-                            reinterpret_cast<uintptr_t>(frame) + 0xD0);
-                        FramePosGetClientRect_Fn(pos, rect);
-                        ViewportTransformRect_Fn(transformed, rect);
-                        // Validate: skip if right < left or bottom <= top (matches original)
-                        if (transformed[2] >= transformed[0] && transformed[3] > transformed[1]) {
-                            memcpy(viewport, transformed, sizeof(viewport));
-                            FrCacheSetViewport_Fn(nullptr, viewport);
-                        }
-                    }
-                }
-                break;
-            }
-            case FRCACHE_FRAME_VIEWPORT: {
-                if (entry.index < frames.size()) {
-                    auto* frame = frames[entry.index];
-                    if (frame) {
-                        float rect[4], transformed[4];
-                        auto* pos = reinterpret_cast<void*>(
-                            reinterpret_cast<uintptr_t>(frame) + 0xD0);
-                        FramePosGetFrameRect_Fn(pos, rect);
-                        ViewportTransformRect_Fn(transformed, rect);
-                        // Validate: skip if left > right or top >= bottom (matches original)
-                        if (transformed[0] <= transformed[2] && transformed[1] < transformed[3]) {
-                            memcpy(viewport, transformed, sizeof(viewport));
-                            FrCacheSetViewport_Fn(nullptr, viewport);
-                        }
-                    }
-                }
-                break;
-            }
             }
         }
 
+        // Process the buffer in segments, calling the trampoline for each
+        // segment and injecting TB content at popup boundaries.
+        auto* original_buffer = buffer.m_buffer;
+        auto original_size = buffer.m_size;
+
+        static std::vector<bool> tb_drawn;
+        tb_drawn.assign(composite.size(), false);
+        bool base_overlays_rendered = false;
+        GW::UI::Frame* current_floating = nullptr;
+        StateTransition st;
+        st.Init(s_device);
+        uint32_t seg_start = 0;
+
+        for (const auto& boundary : boundaries) {
+            // Let GW process entries [seg_start, boundary.buf_idx) via trampoline
+            if (boundary.buf_idx > seg_start) {
+                st.EnterGWState();
+                buffer.m_buffer = original_buffer + seg_start;
+                buffer.m_size = boundary.buf_idx - seg_start;
+                FrCacheRenderAll_Trampoline(param_1, param_2);
+            }
+
+            // Before the first popup: render base UI overlays AND any
+            // frame-specific overlays for non-popup frames.
+            if (!base_overlays_rendered) {
+                base_overlays_rendered = true;
+                RunOverlayCallbacks(st, [](OverlayCallbackEntry& cb) {
+                    if (!cb.gw_frame_label) return true; // base UI
+                    bool is_popup = cb.resolved_frame &&
+                        (cb.resolved_frame->field92_0x190 & 0x20);
+                    return !is_popup; // non-popup overlays render with base UI
+                });
+            }
+
+            // Render callbacks for the PREVIOUS popup (its content just finished)
+            if (current_floating) {
+                RunOverlayCallbacks(st, [current_floating](OverlayCallbackEntry& cb) {
+                    return cb.resolved_frame == current_floating;
+                });
+            }
+
+            // Render TB windows with z < popup_z directly to the backbuffer
+            for (size_t ci = 0; ci < composite.size(); ci++) {
+                if (tb_drawn[ci] || !composite[ci].is_tb || composite[ci].z >= boundary.z)
+                    continue;
+                st.EnterTBState();
+                RenderTBWindowDirect(s_device, composite[ci].tb_name);
+                tb_drawn[ci] = true;
+            }
+
+            current_floating = boundary.frame;
+            seg_start = boundary.buf_idx;
+        }
+
+        // Process remaining entries after the last boundary
+        st.EnterGWState();
+        buffer.m_buffer = original_buffer + seg_start;
+        buffer.m_size = original_size - seg_start;
+        FrCacheRenderAll_Trampoline(param_1, param_2);
+
+        // Restore original buffer state
+        buffer.m_buffer = original_buffer;
+        buffer.m_size = original_size;
+
         // Render any callbacks/overlays that weren't rendered during popup processing.
-        // Only render if the target GW frame is visible — at character select or when
-        // the target window is closed, skip rather than rendering orphaned overlays.
         if (s_device) {
             RunOverlayCallbacks(st, [](OverlayCallbackEntry& cb) {
-                // Skip if the target frame doesn't exist or isn't visible
                 if (cb.gw_frame_label && (!cb.resolved_frame || !cb.resolved_frame->IsVisible()))
                     return false;
                 return true;
@@ -668,21 +591,15 @@ namespace Compositor {
         }
 
         // Render any TB windows not yet drawn
-        if (s_device) {
-            for (size_t ci = 0; ci < composite.size(); ci++) {
-                if (tb_drawn[ci] || !composite[ci].is_tb) continue;
-                st.EnterTBState();
-                RenderTBWindowDirect(s_device, composite[ci].tb_name);
-                tb_drawn[ci] = true;
-            }
+        for (size_t ci = 0; ci < composite.size(); ci++) {
+            if (tb_drawn[ci] || !composite[ci].is_tb) continue;
+            st.EnterTBState();
+            RenderTBWindowDirect(s_device, composite[ci].tb_name);
+            tb_drawn[ci] = true;
         }
 
         // Restore GW state and release the state block
         st.Release();
-
-        // Reset viewport to full screen (matches original FrCache_RenderAll epilogue)
-        float full_viewport[4] = {0, 0, 1, 1};
-        FrCacheSetViewport_Fn(nullptr, full_viewport);
 
         ResetOverlayCallbacks();
         GW::Hook::LeaveHook();
@@ -712,8 +629,6 @@ namespace Compositor {
         s_hook_failed = false;
         s_RenderBuffer = nullptr;
         s_FrameArray = nullptr;
-        s_SecondaryArray = nullptr;
-        s_ZSortList = nullptr;
         s_OverlayList = nullptr;
         s_GrDev_Default = nullptr;
     }
@@ -760,97 +675,31 @@ namespace Compositor {
             return false;
         }
 
-        // FrCache_SetViewport: asserts "viewport.x0 >= 0" in GrDev.cpp
-        FrCacheSetViewport_Fn = reinterpret_cast<FrCacheSetViewportFn>(
-            GW::Scanner::ToFunctionStart(
-                GW::Scanner::FindAssertion("GrDev.cpp", "viewport.x0 >= 0", 0, 0)));
-
         // GrDev_FlushQueues: asserts "m_queueFlushing == GR_QUEUES" in GrDev.cpp
-        GrDev_FlushQueues_Fn = reinterpret_cast<GrDevFlushQueuesFn>(
-            GW::Scanner::ToFunctionStart(
-                GW::Scanner::FindAssertion("GrDev.cpp", "m_queueFlushing == GR_QUEUES", 0, 0)));
-
-        // FrMsg_Dispatch: 2nd function asserting "msgId != FRAME_MSG_CREATE" in FrMsg.cpp
-        FrMsgDispatch_Fn = reinterpret_cast<FrMsgDispatchFn>(
-            GW::Scanner::ToFunctionStart(
-                GW::Scanner::FindNthUseOfString("msgId != FRAME_MSG_CREATE", 1)));
-
-        // FrCache_RenderEntry: asserts "!array[GR_SORT_DEFAULT].Count()" in GrDev.cpp.
-        // Assertion is ~0x65E bytes into the function, so extend scan range.
-        FrCacheRenderEntry_Fn = reinterpret_cast<FrCacheRenderEntryFn>(
-            GW::Scanner::ToFunctionStart(
-                GW::Scanner::FindAssertion("GrDev.cpp", "!array[GR_SORT_DEFAULT].Count()", 0, 0), 0x800));
-
-        // ---- Extract utility functions from FrCache_RenderAll body ----
-
-        auto render_all_end = render_all_addr + 0x300; // function is ~0x280 bytes
-
-        // FrameState_TestFlag: called right after PUSH 0x1000 in FrCache_RenderAll
-        auto push_1000 = GW::Scanner::FindInRange(
-            "\x68\x00\x10\x00\x00", "xxxxx", 0, render_all_addr, render_all_end);
-        if (push_1000) {
-            // Scan forward for the next E8 (CALL) within a few bytes
-            for (auto a = push_1000 + 5; a < push_1000 + 20; a++) {
-                if (*reinterpret_cast<uint8_t*>(a) == 0xE8) {
-                    FrameStateTestFlag_Fn = reinterpret_cast<FrameStateTestFlagFn>(
-                        GW::Scanner::FunctionFromNearCall(a));
-                    break;
-                }
-            }
-        }
-
-        // FramePos_GetClientRect: the function containing TEST [ECX+0xC0],0x420 is
-        // GetFrameRect; GetClientRect is the other FramePos_ call (LEA EAX,[ECX+0x2C]).
-        // Find GetFrameRect via its unique TEST pattern:
-        FramePosGetFrameRect_Fn = reinterpret_cast<FramePosGetRectFn>(
-            GW::Scanner::ToFunctionStart(
-                GW::Scanner::Find("\xF7\x81\xC0\x00\x00\x00\x20\x04\x00\x00", "xxxxxxxxxx")));
-
-        // FramePos_GetClientRect: LEA EAX,[ECX+0x2C]; PUSH EAX; PUSH [EBP+8]; CALL
-        FramePosGetClientRect_Fn = reinterpret_cast<FramePosGetRectFn>(
-            GW::Scanner::ToFunctionStart(
-                GW::Scanner::Find("\x8D\x41\x2C\x50\xFF\x75\x08\xE8", "xxxxxxxx")));
-
-        // Viewport_TransformRect: called right after FramePos_GetClientRect in RenderAll.
-        // Find the CALL to GetClientRect in RenderAll, then the next CALL is TransformRect.
-        if (FramePosGetClientRect_Fn) {
-            auto get_client_addr = reinterpret_cast<uintptr_t>(FramePosGetClientRect_Fn);
-            for (auto a = render_all_addr; a < render_all_end - 5; a++) {
-                if (*reinterpret_cast<uint8_t*>(a) == 0xE8 &&
-                    GW::Scanner::FunctionFromNearCall(a) == get_client_addr) {
-                    // Found call to GetClientRect — next CALL is TransformRect
-                    for (auto b = a + 5; b < a + 30; b++) {
-                        if (*reinterpret_cast<uint8_t*>(b) == 0xE8) {
-                            ViewportTransformRect_Fn = reinterpret_cast<ViewportTransformRectFn>(
-                                GW::Scanner::FunctionFromNearCall(b));
-                            break;
-                        }
-                    }
-                    break;
-                }
-            }
-        }
+        auto flush_queues_addr = GW::Scanner::ToFunctionStart(
+            GW::Scanner::FindAssertion("GrDev.cpp", "m_queueFlushing == GR_QUEUES", 0, 0));
+        GrDev_FlushQueues_Fn = reinterpret_cast<GrDevFlushQueuesFn>(flush_queues_addr);
 
         // ---- Extract globals from FrCache_Render ----
 
         // FrCache_Render starts with: CMP dword ptr [RenderFrameList.m_size], 0
         // Bytes at offset +3: 83 3D [addr32] 00
         // The 4-byte address at render_addr+5 is RenderFrameList.m_size.
-        // The 4 Array<T> structs are consecutive (16 bytes each):
-        //   RenderFrameList, FrameArray, SecondaryArray, RenderBuffer
+        // The Array<T> structs are consecutive (16 bytes each):
+        //   RenderFrameList, FrameArray, SecondaryArray, RenderBuffer, ZSortList, OverlayList
         auto frame_list_size_addr = *reinterpret_cast<uintptr_t*>(render_addr + 5);
         auto frame_list_base = frame_list_size_addr - 8; // m_size is at +8 in Array<T>
         s_FrameArray = reinterpret_cast<GW::Array<GW::UI::Frame*>*>(frame_list_base + 0x10);
-        s_SecondaryArray = reinterpret_cast<GW::Array<int*>*>(frame_list_base + 0x20);
         s_RenderBuffer = reinterpret_cast<GW::Array<FrCacheBufferEntry>*>(frame_list_base + 0x30);
-        s_ZSortList = reinterpret_cast<GW::Array<GW::UI::Frame*>*>(frame_list_base + 0x40);
         s_OverlayList = reinterpret_cast<GW::Array<GW::UI::Frame*>*>(frame_list_base + 0x50);
 
-        // GrDev_Default: loaded via MOV ESI,[addr] in FrCache_SetViewport
-        // (at ~offset 0x6A, in the null render_target path)
-        if (FrCacheSetViewport_Fn) {
-            auto svp = reinterpret_cast<uintptr_t>(FrCacheSetViewport_Fn);
-            for (auto a = svp; a < svp + 0x80; a++) {
+        // GrDev_Default: FrCache_SetViewport loads the device global early in its
+        // body. We find SetViewport via its assertion but only need the global,
+        // not the function pointer.
+        auto set_viewport_addr = GW::Scanner::ToFunctionStart(
+            GW::Scanner::FindAssertion("GrDev.cpp", "viewport.x0 >= 0", 0, 0));
+        if (set_viewport_addr) {
+            for (auto a = set_viewport_addr; a < set_viewport_addr + 0x80; a++) {
                 auto b = *reinterpret_cast<uint8_t*>(a);
                 if (b == 0xA1) { // MOV EAX, [addr32]
                     auto addr = *reinterpret_cast<uintptr_t*>(a + 1);
@@ -860,7 +709,6 @@ namespace Compositor {
                     }
                 }
                 if (b == 0x8B && (*reinterpret_cast<uint8_t*>(a + 1) & 0xC7) == 0x05) {
-                    // MOV reg, [addr32] (8B /r with mod=00, r/m=101)
                     auto addr = *reinterpret_cast<uintptr_t*>(a + 2);
                     if (GW::Scanner::IsValidPtr(addr)) {
                         s_GrDev_Default = reinterpret_cast<void**>(addr);
@@ -872,26 +720,13 @@ namespace Compositor {
 
         // ---- Verify all pointers resolved ----
 #ifdef _DEBUG
-        ASSERT(FrCacheSetViewport_Fn);
-        ASSERT(FrCacheRenderEntry_Fn);
-        ASSERT(FramePosGetClientRect_Fn);
-        ASSERT(FramePosGetFrameRect_Fn);
-        ASSERT(ViewportTransformRect_Fn);
-        ASSERT(FrMsgDispatch_Fn);
-        ASSERT(FrameStateTestFlag_Fn);
         ASSERT(GrDev_FlushQueues_Fn);
         ASSERT(s_RenderBuffer);
         ASSERT(s_FrameArray);
-        ASSERT(s_SecondaryArray);
-        ASSERT(s_ZSortList);
         ASSERT(s_GrDev_Default);
 #endif
-        if (!FrCacheSetViewport_Fn || !FrCacheRenderEntry_Fn ||
-            !FramePosGetClientRect_Fn || !FramePosGetFrameRect_Fn ||
-            !ViewportTransformRect_Fn || !FrMsgDispatch_Fn ||
-            !FrameStateTestFlag_Fn || !GrDev_FlushQueues_Fn ||
-            !s_RenderBuffer || !s_FrameArray || !s_SecondaryArray ||
-            !s_ZSortList || !s_GrDev_Default) {
+        if (!GrDev_FlushQueues_Fn ||
+            !s_RenderBuffer || !s_FrameArray || !s_GrDev_Default) {
             Log::Warning("Compositor: one or more function pointers failed to resolve, z-interleaving disabled");
             s_hook_failed = true;
             return false;
