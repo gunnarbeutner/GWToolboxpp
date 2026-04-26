@@ -491,9 +491,16 @@ namespace Compositor {
             return;
         }
 
-        // Pre-scan the buffer for popup boundaries (POPUP flag on type 1/2/3
-        // entries).  Build a list of {buffer_index, popup_frame, unified_z}
-        // for each boundary where we need to inject TB content.
+        // Pre-scan the buffer for popup boundaries.  Only use type 2/3
+        // (viewport) entries as boundaries — NOT type 1 (callback).
+        //
+        // Reason: the trampoline's local viewport variables are uninitialized
+        // at function entry and only set by type 2/3 entries.  If a segment
+        // starts with a type 1 callback, the callback receives stack garbage
+        // as viewport parameters (whatever prior functions left on the stack).
+        // By restricting boundaries to viewport entries, the trampoline's
+        // first action is always to set the viewport locals, avoiding the
+        // uninitialized-variable issue.
         auto& buffer = *s_RenderBuffer;
         auto& frames = *s_FrameArray;
 
@@ -504,7 +511,9 @@ namespace Compositor {
 
         for (uint32_t i = 0; i < buffer.size(); i++) {
             const auto& entry = buffer[i];
-            if (entry.type == FRCACHE_GPU_RENDER || entry.index >= frames.size()) continue;
+            if (entry.type != FRCACHE_CLIENT_VIEWPORT && entry.type != FRCACHE_FRAME_VIEWPORT)
+                continue;
+            if (entry.index >= frames.size()) continue;
             auto* frame = frames[entry.index];
             if (!frame || !(frame->field92_0x190 & 0x20) || frame == last_popup) continue;
             // Find this popup frame in the composite order
