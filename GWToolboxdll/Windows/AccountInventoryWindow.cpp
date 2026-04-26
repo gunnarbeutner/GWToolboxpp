@@ -114,6 +114,21 @@ namespace {
 
     const char* BAG_NAME[] = {"",          "Backpack",  "Belt Pouch", "Bag 1",     "Bag 2",     "Equipment Pack", "Material Storage", "Unclaimed Items", "Storage 1",  "Storage 2",  "Storage 3",     "Storage 4",
                               "Storage 5", "Storage 6", "Storage 7",  "Storage 8", "Storage 9", "Storage 10",     "Storage 11",       "Storage 12",      "Storage 13", "Storage 14", "Equipped Items"};
+
+    const char* GetHeroName(GW::Constants::HeroID hero_id)
+    {
+        if (hero_id == GW::Constants::HeroID::NoHero) return "(Player)";
+        const auto& name = Resources::GetHeroName(hero_id)->string();
+        return name.empty() ? "(Unknown Hero)" : name.c_str();
+    }
+
+    const char* GetBagName(GW::Constants::Bag bag_id)
+    {
+        auto idx = static_cast<size_t>(bag_id);
+        if (idx < std::size(BAG_NAME)) return BAG_NAME[idx];
+        return "(Unknown Bag)";
+    }
+
     uint32_t GetMaxBagCapacity(GW::Constants::Bag bag_id)
     {
         if (bag_id == GW::Constants::Bag::None || bag_id >= GW::Constants::Bag::Max) return 0;
@@ -804,7 +819,7 @@ namespace {
                     r.slot = slot;
                     r.item = &item;
                     r.character_name = "(Chest)";
-                    r.location = BAG_NAME[(int)bag_id];
+                    r.location = GetBagName(bag_id);
                     item_refs.push_back(std::move(r));
                 }
             }
@@ -833,7 +848,7 @@ namespace {
                         r.slot = slot;
                         r.item = &item;
                         r.character_name = ch.name;
-                        r.location = Resources::GetHeroName(hero_id)->string();
+                        r.location = GetHeroName(hero_id);
                         item_refs.push_back(std::move(r));
                     }
                 }
