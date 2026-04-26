@@ -372,7 +372,7 @@ namespace {
                         delta = l->location.compare(r->location);
                         break;
                     case ItemColumnID_ModelID:
-                        delta = l->item->model_id - r->item->model_id;
+                        if (l->item->model_id != r->item->model_id) delta = l->item->model_id < r->item->model_id ? -1 : 1;
                         break;
                     case ItemColumnID_Description:
                         delta = lms.description.compare(rms.description);
@@ -385,7 +385,7 @@ namespace {
         if (delta == 0) delta = l->character_name.compare(r->character_name);
         if (delta == 0) delta = l->location.compare(r->location);
         if (delta == 0) delta = static_cast<int>(l->bag_id) - static_cast<int>(r->bag_id);
-        if (delta == 0) delta = l->slot - r->slot;
+        if (delta == 0 && l->slot != r->slot) delta = l->slot < r->slot ? -1 : 1;
         if (delta == 0) delta = memcmp(&l->account->uuid, &r->account->uuid, sizeof(l->account->uuid));
         return delta * sort_direction < 0;
     }
@@ -426,10 +426,10 @@ namespace {
         {
             int sort_direction = 1;
             int delta = 0;
-            auto l_free_inventory = l->max_inventory - l->occupied_inventory;
-            auto l_free_equipment = l->max_equipment - l->occupied_equipment;
-            auto r_free_inventory = r->max_inventory - r->occupied_inventory;
-            auto r_free_equipment = r->max_equipment - r->occupied_equipment;
+            int l_free_inventory = (int)l->max_inventory - (int)l->occupied_inventory;
+            int l_free_equipment = (int)l->max_equipment - (int)l->occupied_equipment;
+            int r_free_inventory = (int)r->max_inventory - (int)r->occupied_inventory;
+            int r_free_equipment = (int)r->max_equipment - (int)r->occupied_equipment;
             if (sort_specs) {
                 for (int n = 0; n < sort_specs->SpecsCount; n++) {
                     const ImGuiTableColumnSortSpecs* sort_spec = &sort_specs->Specs[n];
@@ -443,13 +443,13 @@ namespace {
                             delta = l_free_inventory - r_free_inventory;
                             break;
                         case SlotColumnID_InventorySize:
-                            delta = l->max_inventory - r->max_inventory;
+                            delta = (int)l->max_inventory - (int)r->max_inventory;
                             break;
                         case SlotColumnID_Equipment:
                             delta = l_free_equipment - r_free_equipment;
                             break;
                         case SlotColumnID_EquipmentSize:
-                            delta = l->max_equipment - r->max_equipment;
+                            delta = (int)l->max_equipment - (int)r->max_equipment;
                             break;
                     }
                     if (delta != 0) return delta * sort_direction < 0;
