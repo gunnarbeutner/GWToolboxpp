@@ -75,7 +75,6 @@ namespace {
     const wchar_t* json_filename = L"friends.json";
     bool loading = false;     // Loading from disk?
     bool polling = false;     // Polling in progress?
-    bool poll_queued = false; // Used to avoid overloading the thread queue.
     bool friends_changed = false;
     bool friend_list_ready = false; // Allow processing when this is true.
     bool need_to_reorder_friends = true;
@@ -91,7 +90,6 @@ namespace {
 
     clock_t friends_list_checked = 0;
 
-    uint8_t poll_interval_seconds = 10;
 
     std::unordered_map<std::wstring, FriendListWindow::Friend*> uuid_by_name{};
 
@@ -960,11 +958,8 @@ void FriendListWindow::Update(const float)
     if (!friend_list_ready) {
         return;
     }
-    if (!poll_queued) {
-        const auto interval_check = poll_interval_seconds * CLOCKS_PER_SEC;
-        if (!friends_list_checked || clock() - friends_list_checked > interval_check) {
-            Poll();
-        }
+    if (!friends_list_checked) {
+        Poll();
     }
     UpdatePendingWhisper();
     UpdateOfflineReminder();
