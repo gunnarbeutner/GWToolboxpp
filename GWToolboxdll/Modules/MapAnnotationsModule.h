@@ -136,6 +136,8 @@ public:
 
     // Check if an agent is being tracked by a map annotation
     static bool IsAgentAnnotated(uint32_t agent_id);
+    // Collect all agent IDs currently tracked by visible annotations
+    static void GetAnnotatedAgentIds(std::unordered_set<uint32_t>& out);
 
 
     // Check if an annotation is hovered and show its context menu if so.

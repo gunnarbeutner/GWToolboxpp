@@ -2378,6 +2378,18 @@ bool MapAnnotationsModule::IsAgentAnnotated(uint32_t agent_id)
     return false;
 }
 
+void MapAnnotationsModule::GetAnnotatedAgentIds(std::unordered_set<uint32_t>& out)
+{
+    out.clear();
+    for (const auto& layer : layers) {
+        if (!layer.visible) continue;
+        for (const auto& marker : layer.markers) {
+            if (marker.detected_agent_id)
+                out.insert(marker.detected_agent_id);
+        }
+    }
+}
+
 static void DrawWorldMapOverlay(ImDrawList& draw_list)
 {
     if (!initialized) return;

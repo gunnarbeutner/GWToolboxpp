@@ -38,6 +38,9 @@ namespace {
     };
     std::vector<TrackedEnemy> tracked_enemies_by_agent_id;
     size_t highest_trackable_agent_id = 0;
+    bool enemies_dirty = true;
+    constexpr float ENEMY_MOVE_THRESHOLD_SQ = 4.0f; // ~2 game units before we consider it moved
+    std::unordered_set<uint32_t> cached_annotated_ids;
 
     GW::Constants::MapID tracked_enemies_map_id = static_cast<GW::Constants::MapID>(0);
     GW::Constants::InstanceType tracked_enemies_instance_type = GW::Constants::InstanceType::Loading;
@@ -701,6 +704,7 @@ namespace {
             tracked_enemies_map_id = map_id;
             highest_trackable_agent_id = 0;
             tracked_enemies_instance_type = instance_type;
+            enemies_dirty = true;
         }
 
         const auto player_pos = GW::PlayerMgr::GetPlayerPosition();
@@ -710,9 +714,12 @@ namespace {
         static bool was_dead = false;
         const bool is_dead = !GW::Agents::GetAgentMatchesFlags(GW::Agents::GetControlledCharacter(), GW::TargetFilter::Allies);
         if (is_dead) { was_dead = true; return; }
-        if (was_dead) { was_dead = false; return; }
+        if (was_dead) { was_dead = false; enemies_dirty = true; return; }
 
-        if (tracked_enemies_by_agent_id.size() < agents->size()) tracked_enemies_by_agent_id.resize(agents->size());
+        if (tracked_enemies_by_agent_id.size() < agents->size()) {
+            tracked_enemies_by_agent_id.resize(agents->size());
+            enemies_dirty = true;
+        }
 
         for (size_t agent_id = 0, len = agents->size(); agent_id < len; agent_id++) {
             const auto agent = agents->at(agent_id);
@@ -721,6 +728,7 @@ namespace {
                 if (tracked.state == EnemyState::Alive) {
                     if (GW::GetSquareDistance(*player_pos, tracked.pos) < stale_range_sq) {
                         tracked.state = EnemyState::Stale;
+                        enemies_dirty = true;
                     }
                 }
                 if (tracked.state != EnemyState::NotApplicable) {
@@ -729,18 +737,26 @@ namespace {
                 continue;
             }
             if (!GW::Agents::GetAgentMatchesFlags(agent, GW::TargetFilter::Enemies)) {
+                if (tracked.state != EnemyState::NotApplicable) enemies_dirty = true;
                 tracked.state = EnemyState::NotApplicable;
                 continue;
             }
             const auto* living = agent->GetAsAgentLiving();
             auto* npc = GW::Agents::GetNPCByID(living->player_number);
             if (npc && (npc->IsSpirit() || npc->IsMinion())) {
+                if (tracked.state != EnemyState::NotApplicable) enemies_dirty = true;
                 tracked.state = EnemyState::NotApplicable;
                 continue;
             }
 
             if (isnan(living->pos.x) || isnan(living->pos.y)) continue;
-            tracked.pos = {living->pos.x, living->pos.y};
+            const GW::Vec2f new_pos = {living->pos.x, living->pos.y};
+            if (tracked.state != EnemyState::Alive
+                || GW::GetSquareDistance(tracked.pos, new_pos) >= ENEMY_MOVE_THRESHOLD_SQ
+                || tracked.rotation != living->rotation_angle) {
+                enemies_dirty = true;
+            }
+            tracked.pos = new_pos;
             tracked.rotation = living->rotation_angle;
             tracked.state = EnemyState::Alive;
             highest_trackable_agent_id = agent_id;
@@ -750,6 +766,7 @@ namespace {
             if (tracked.state == EnemyState::Alive) {
                 if (GW::GetSquareDistance(*player_pos, tracked.pos) < stale_range_sq) {
                     tracked.state = EnemyState::Stale;
+                    enemies_dirty = true;
                 }
             }
             if (tracked.state != EnemyState::NotApplicable) {
@@ -758,6 +775,9 @@ namespace {
         }
 
         if (nav_active) NavigateToClosestEnemy();
+        if (!enemies_dirty) return;
+        enemies_dirty = false;
+
         enemy_vertex_buffer.clear();
 
         const float radius = settings.vq_enemy_marker_size * cached_px_to_game;
@@ -766,10 +786,12 @@ namespace {
         teardrop_outline.SetRadius(radius_outer);
         teardrop_outline.SetColor(settings.vq_color_enemy_outline);
 
+        MapAnnotationsModule::GetAnnotatedAgentIds(cached_annotated_ids);
+
         for (size_t i = 0, len = std::min(tracked_enemies_by_agent_id.size(), highest_trackable_agent_id + 1); i < len; i++) {
             auto& enemy = tracked_enemies_by_agent_id[i];
             if (enemy.state == EnemyState::NotApplicable) continue;
-            if (MapAnnotationsModule::IsAgentAnnotated(static_cast<uint32_t>(i))) continue;
+            if (cached_annotated_ids.contains(static_cast<uint32_t>(i))) continue;
             const DWORD color = enemy.state == EnemyState::Stale ? settings.vq_color_enemy_stale : settings.vq_color_enemy_alive;
             teardrop_fill.SetColor(color);
             teardrop_fill.SetCenterColor(color);
