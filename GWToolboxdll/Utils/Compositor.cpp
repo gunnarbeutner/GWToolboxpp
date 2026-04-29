@@ -554,8 +554,8 @@ namespace Compositor {
                 base_overlays_rendered = true;
                 RunOverlayCallbacks(st, [](OverlayCallbackEntry& cb) {
                     if (!cb.gw_frame_label) return true; // base UI
-                    bool is_popup = cb.resolved_frame &&
-                        (cb.resolved_frame->field92_0x190 & 0x20);
+                    auto* frame = GW::UI::GetFrameByLabel(cb.gw_frame_label);
+                    bool is_popup = frame && (frame->field92_0x190 & 0x20);
                     return !is_popup; // non-popup overlays render with base UI
                 });
             }
@@ -563,7 +563,8 @@ namespace Compositor {
             // Render callbacks for the PREVIOUS popup (its content just finished)
             if (current_floating) {
                 RunOverlayCallbacks(st, [current_floating](OverlayCallbackEntry& cb) {
-                    return cb.resolved_frame == current_floating;
+                    if (!cb.gw_frame_label) return false;
+                    return GW::UI::GetFrameByLabel(cb.gw_frame_label) == current_floating;
                 });
             }
 
@@ -593,8 +594,11 @@ namespace Compositor {
         // Render any callbacks/overlays that weren't rendered during popup processing.
         if (s_device) {
             RunOverlayCallbacks(st, [](OverlayCallbackEntry& cb) {
-                if (cb.gw_frame_label && (!cb.resolved_frame || !cb.resolved_frame->IsVisible()))
-                    return false;
+                if (cb.gw_frame_label) {
+                    auto* frame = GW::UI::GetFrameByLabel(cb.gw_frame_label);
+                    if (!frame || !frame->IsVisible())
+                        return false;
+                }
                 return true;
             });
         }
