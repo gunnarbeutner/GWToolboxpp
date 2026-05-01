@@ -565,12 +565,18 @@ namespace {
             case WM_MOUSEMOVE:
             case WM_MOUSEWHEEL: {
                 // Check if mouse is over a GW window occluding a TB window.
+                // Note: io.MousePos is stale here (updated during NewFrame, not WndProc),
+                // so use the real cursor position from the OS.
                 {
+                    POINT cursor_pt;
+                    GetCursorPos(&cursor_pt);
+                    ScreenToClient(gw_window_handle, &cursor_pt);
+                    float mx = (float)cursor_pt.x, my = (float)cursor_pt.y;
                     uint64_t tb_z = Compositor::GetHoveredTBWindowZ();
-                    if (tb_z > 0 && Compositor::IsPointOccludedByGW(io.MousePos.x, io.MousePos.y, tb_z)) {
+                    if (tb_z > 0 && Compositor::IsPointOccludedByGW(mx, my, tb_z)) {
                         io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
                         if (Message == WM_LBUTTONDOWN || Message == WM_LBUTTONDBLCLK) {
-                            Compositor::GetUnifiedZOrder().OnGWWindowClicked(io.MousePos.x, io.MousePos.y);
+                            Compositor::GetUnifiedZOrder().OnGWWindowClicked(mx, my);
                         }
                         break;
                     }
@@ -1183,8 +1189,12 @@ static void DrawImGuiFrame(IDirect3DDevice9* device)
         // Only applies when z-interleaving is active — if hooks failed, TB renders on
         // top so there's nothing to occlude against.
         if (Compositor::IsHooked()) {
+            POINT cursor_pt;
+            GetCursorPos(&cursor_pt);
+            ScreenToClient(gw_window_handle, &cursor_pt);
+            float mx = (float)cursor_pt.x, my = (float)cursor_pt.y;
             uint64_t tb_z = Compositor::GetHoveredTBWindowZ();
-            if (tb_z > 0 && Compositor::IsPointOccludedByGW(io.MousePos.x, io.MousePos.y, tb_z)) {
+            if (tb_z > 0 && Compositor::IsPointOccludedByGW(mx, my, tb_z)) {
                 io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
             }
         }

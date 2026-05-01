@@ -6,6 +6,7 @@
 
 #include <GWCA/GameContainers/Array.h>
 #include <GWCA/Managers/MapMgr.h>
+#include <GWCA/Managers/MemoryMgr.h>
 #include <GWCA/Managers/UIMgr.h>
 #include <GWCA/Utilities/Hooker.h>
 #include <GWCA/Utilities/Scanner.h>
@@ -149,6 +150,20 @@ namespace Compositor {
             topmost->unified_z = next_z_++;
             gw_z_[topmost->frame] = topmost->unified_z;
         }
+    }
+
+    uint64_t UnifiedZOrder::GetTopTBWindowZAtPoint(float x, float y) const
+    {
+        uint64_t best_z = 0;
+        for (const auto& [name, z] : tb_z_) {
+            auto* win = ImGui::FindWindowByName(name.c_str());
+            if (!win || !win->Active || win->Hidden) continue;
+            if (x >= win->Pos.x && x <= win->Pos.x + win->Size.x &&
+                y >= win->Pos.y && y <= win->Pos.y + win->Size.y) {
+                if (z > best_z) best_z = z;
+            }
+        }
+        return best_z;
     }
 
     // -----------------------------------------------------------------------
@@ -392,7 +407,22 @@ namespace Compositor {
             uint64_t z = zo.GetZ(active->Name);
             if (z > 0) return z;
         }
-        return 0;
+        // Geometric fallback: when we previously hid the mouse from ImGui (set to
+        // -FLT_MAX), HoveredWindow gets cleared next frame. Without this fallback
+        // the occlusion check fails every other frame, causing one-frame hover
+        // flicker. Resolve the real cursor position and hit-test TB windows directly.
+        auto& io = ImGui::GetIO();
+        float mx = io.MousePos.x, my = io.MousePos.y;
+        if (mx == -FLT_MAX) {
+            POINT pt;
+            if (!GetCursorPos(&pt)) return 0;
+            HWND hwnd = GW::MemoryMgr::GetGWWindowHandle();
+            if (!hwnd) return 0;
+            ScreenToClient(hwnd, &pt);
+            mx = (float)pt.x;
+            my = (float)pt.y;
+        }
+        return zo.GetTopTBWindowZAtPoint(mx, my);
     }
 
     // -----------------------------------------------------------------------

@@ -54,6 +54,9 @@ namespace Compositor {
 
         const std::vector<GWWindowInfo>& GetGWWindows() const { return gw_windows_; }
 
+        // Geometric hit-test: find the topmost (highest z) TB window at the given point.
+        uint64_t GetTopTBWindowZAtPoint(float x, float y) const;
+
     private:
         uint64_t next_z_ = 1;
         std::unordered_map<std::string, uint64_t> tb_z_;
