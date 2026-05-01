@@ -15,6 +15,7 @@
 
 #include <GWCA/GameEntities/Map.h>
 
+#include <GWCA/Managers/ChatMgr.h>
 #include <GWCA/Managers/MapMgr.h>
 #include <GWCA/Managers/MemoryMgr.h>
 #include <GWCA/Managers/RenderMgr.h>
@@ -635,6 +636,41 @@ namespace {
                     return true; // if imgui wants them, send just to imgui (above)
                 }
 
+                // Esc closes the topmost unpinned window in unified z-order.
+                if (Message == WM_KEYDOWN && wParam == VK_ESCAPE && !GW::Chat::GetIsTyping()) {
+                    // Find topmost closeable unpinned TB window
+                    ToolboxUIElement* topmost_tb = nullptr;
+                    uint64_t topmost_tb_z = 0;
+                    for (auto* el : GWToolbox::GetUIElements()) {
+                        if (!el->IsWindow() || !el->visible || el->pinned
+                            || el->unified_z_ == 0 || !el->GetVisiblePtr())
+                            continue;
+                        if (el->unified_z_ > topmost_tb_z) {
+                            topmost_tb_z = el->unified_z_;
+                            topmost_tb = el;
+                        }
+                    }
+                    // Find topmost closeable unpinned GW dialog.
+                    // Closeable = callback flag bit 0x1; pinned = position.flags bit 0x20.
+                    uint64_t topmost_gw_z = 0;
+                    for (const auto& w : Compositor::GetUnifiedZOrder().GetGWWindows()) {
+                        if (w.frame->position.flags & 0x20) continue; // pinned
+                        bool closeable = false;
+                        for (size_t i = 0; i < w.frame->frame_callbacks.size(); i++) {
+                            if (w.frame->frame_callbacks[i].callback_state & 0x1) {
+                                closeable = true;
+                                break;
+                            }
+                        }
+                        if (closeable && w.unified_z > topmost_gw_z)
+                            topmost_gw_z = w.unified_z;
+                    }
+                    if (topmost_tb && topmost_tb_z > topmost_gw_z) {
+                        topmost_tb->visible = false;
+                        return true;
+                    }
+                }
+
                 // send input to chat commands for camera movement
                 if (CameraUnlockModule::Instance().WndProc(Message, wParam, lParam)) {
                     return true;
@@ -1229,6 +1265,7 @@ static void DrawImGuiFrame(IDirect3DDevice9* device)
             else {
                 uielement->Draw(device);
             }
+            uielement->DrawPinButton();
         }
 
         // Non-UI modules have no window but may still paint an overlay this frame (e.g. Texmod's recording banner).
