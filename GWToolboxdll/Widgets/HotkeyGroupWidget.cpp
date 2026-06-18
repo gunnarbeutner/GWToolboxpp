@@ -1,5 +1,6 @@
 #include "stdafx.h"
 
+#include <Utils/SettingsDoc.h>
 #include <Windows/HotkeysWindow.h>
 #include <Windows/Hotkeys/HotkeyGroup.h>
 #include <Widgets/HotkeyGroupWidget.h>
@@ -152,33 +153,20 @@ void HotkeyGroupWidget::DrawSettingsInternal()
     }
 }
 
-void HotkeyGroupWidget::LoadSettings(ToolboxIni* ini)
+void HotkeyGroupWidget::LoadSettings(SettingsDoc& doc, ToolboxIni* legacy)
 {
-    ToolboxWidget::LoadSettings(ini);
-    background_opacity = static_cast<float>(ini->GetDoubleValue(Name(), "background_opacity", 0.3));
-    button_height = static_cast<float>(ini->GetDoubleValue(Name(), "button_height", 45.0));
+    ToolboxWidget::LoadSettings(doc, legacy);
+    doc.Get(Name(), "background_opacity", background_opacity);
+    doc.Get(Name(), "button_height", button_height);
 
     group_icons.clear();
-    TNamesDepend keys;
-    ini->GetAllKeys(Name(), keys);
-    for (const auto& key : keys) {
-        const char* k = key.pItem;
-        if (strncmp(k, "icon_", 5) == 0) {
-            const std::string group_name = k + 5;
-            group_icons[group_name] = static_cast<int>(ini->GetLongValue(Name(), k, 0));
-        }
-    }
+    doc.Get(Name(), "group_icons", group_icons);
 }
 
-void HotkeyGroupWidget::SaveSettings(ToolboxIni* ini)
+void HotkeyGroupWidget::SaveSettings(SettingsDoc& doc)
 {
-    ToolboxWidget::SaveSettings(ini);
-    ini->SetDoubleValue(Name(), "background_opacity", background_opacity);
-    ini->SetDoubleValue(Name(), "button_height", button_height);
-
-    for (const auto& [group, idx] : group_icons) {
-        if (group.empty()) continue;
-        const std::string key = "icon_" + group;
-        ini->SetLongValue(Name(), key.c_str(), idx);
-    }
+    ToolboxWidget::SaveSettings(doc);
+    doc.Set(Name(), "background_opacity", background_opacity);
+    doc.Set(Name(), "button_height", button_height);
+    doc.Set(Name(), "group_icons", group_icons);
 }

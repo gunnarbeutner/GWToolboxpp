@@ -27,6 +27,7 @@
 #include <Utils/ToolboxUtils.h>
 #include <Utils/GuiUtils.h>
 #include <Utils/Compositor.h>
+#include <Utils/SettingsDoc.h>
 #include <Widgets/MissionMapWidget.h>
 #include <Widgets/WorldMapWidget.h>
 #include <Windows/Pathfinding/PathfindingWindow.h>
@@ -1654,17 +1655,17 @@ void MapAnnotationsModule::Update(float delta)
     recording_route_data.waypoints.push_back(world_pos);
 }
 
-void MapAnnotationsModule::LoadSettings(ToolboxIni* ini)
+void MapAnnotationsModule::LoadSettings(SettingsDoc& doc, ToolboxIni* legacy)
 {
-    ToolboxWindow::LoadSettings(ini);
-    show_context_menu_edit = ini->GetBoolValue(Name(), "show_context_menu_edit", show_context_menu_edit);
+    ToolboxWindow::LoadSettings(doc, legacy);
+    doc.Get(Name(), "show_context_menu_edit", show_context_menu_edit);
     LoadAllLayers();
 }
 
-void MapAnnotationsModule::SaveSettings(ToolboxIni* ini)
+void MapAnnotationsModule::SaveSettings(SettingsDoc& doc)
 {
-    ToolboxWindow::SaveSettings(ini);
-    ini->SetBoolValue(Name(), "show_context_menu_edit", show_context_menu_edit);
+    ToolboxWindow::SaveSettings(doc);
+    doc.Set(Name(), "show_context_menu_edit", show_context_menu_edit);
     SaveAllUserLayers();
 }
 

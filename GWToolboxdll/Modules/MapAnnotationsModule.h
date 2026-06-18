@@ -130,8 +130,8 @@ public:
     void SignalTerminate() override;
     void Update(float delta) override;
     void Draw(IDirect3DDevice9*) override;
-    void LoadSettings(ToolboxIni*) override;
-    void SaveSettings(ToolboxIni*) override;
+    void LoadSettings(SettingsDoc& doc, ToolboxIni* legacy) override;
+    void SaveSettings(SettingsDoc& doc) override;
     void DrawSettingsInternal() override;
 
     // Check if an agent is being tracked by a map annotation
