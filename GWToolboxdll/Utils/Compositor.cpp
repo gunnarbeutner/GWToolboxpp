@@ -15,6 +15,7 @@
 #include <imgui_internal.h>
 #include <imgui_impl_dx9.h>
 #include <D3DContainers.h>
+#include <Utils/GameWorldCompositor.h>
 #include <Utils/GuiUtils.h>
 
 namespace Compositor {
@@ -54,9 +55,13 @@ namespace Compositor {
 
     using FrCacheRenderFn = void(__cdecl*)(uint32_t, uint32_t);
 
-    // FrCache_RenderAll — hook on the buffer processing function
-    static FrCacheRenderFn FrCacheRenderAll_Original = nullptr;
-    static FrCacheRenderFn FrCacheRenderAll_Trampoline = nullptr;
+    // Z-interleaving is driven from GameWorldCompositor's single FrCache hook via a registered
+    // HUD compositor (see HookFrCacheRender). We no longer install our own hook on the pass.
+    static bool s_registered = false;
+
+    // Set while our HUD compositor renders the TB windows this frame; read by GWToolbox::Draw to
+    // decide whether it must build+render the ImGui frame on top as a fallback instead.
+    static bool s_composited_this_frame = false;
 
     using GrDevFlushQueuesFn = bool(__fastcall*)(void*);
     static GrDevFlushQueuesFn GrDev_FlushQueues_Fn = nullptr;
@@ -488,49 +493,55 @@ namespace Compositor {
         }
     }
 
-    void __cdecl FrCacheRenderAll_Hook(uint32_t param_1, uint32_t param_2)
+    // HUD compositor registered with GameWorldCompositor. GameWorldCompositor owns the single
+    // FrCache hook: it renders the 3D world and its in-world overlays, then hands us the HUD range
+    // [hud_start, buffer_size) plus a functor that renders a slice of the buffer through the
+    // original pass. We interleave TB windows between GW's HUD frames within that range.
+    //
+    // hud_start == buffer_size means GW already drew everything (its no-split / second-dispatch
+    // fallback): we leave s_composited_this_frame false so GWToolbox::Draw renders TB on top.
+    void HudComposite(uint32_t hud_start, uint32_t buffer_size,
+                      const GameWorldCompositor::RenderRange& render_range)
     {
-        GW::Hook::EnterHook();
-
-        // Run the TB draw callback so ImGui draw lists are ready for
-        // compositing. BuildRenderList has already finished at this point
-        // (called by the original FrCache_Render before RenderAll).
+        // Run the TB draw callback so ImGui draw lists are ready for compositing.
         if (s_frame_draw_callback && s_device) {
             s_frame_draw_callback(s_device);
+        }
+
+        if (hud_start >= buffer_size || !s_device) {
+            if (hud_start < buffer_size) render_range(hud_start, buffer_size - hud_start);
+            return; // leave s_composited_this_frame false → Draw() renders TB on top
         }
 
         auto& zo = GetUnifiedZOrder();
         const auto& composite = zo.GetCompositeOrder();
 
-        // Skip z-interleaving when the world map is showing. The world map
-        // renders via the ZSort layer which sits above all overlays in the
-        // buffer. TB widgets that ShowOnWorldMap() render after all GW content.
-        if (GW::UI::GetIsWorldMapShowing() || composite.empty() || !s_device) {
-            FrCacheRenderAll_Trampoline(param_1, param_2);
+        // Skip z-interleaving when the world map is showing. The world map renders via the ZSort
+        // layer which sits above all overlays in the buffer. TB widgets that ShowOnWorldMap()
+        // render after all GW content (via Draw()'s on-top pass), so leave the flag false here.
+        if (GW::UI::GetIsWorldMapShowing() || composite.empty()) {
+            render_range(hud_start, buffer_size - hud_start);
             // Still run base-UI overlay callbacks (e.g. world map annotations)
-            if (s_device) {
-                StateTransition st;
-                st.Init(s_device);
-                RunOverlayCallbacks(st, [](OverlayCallbackEntry& cb) {
-                    return !cb.gw_frame_label;
-                });
-                st.Release();
-            }
+            StateTransition st;
+            st.Init(s_device);
+            RunOverlayCallbacks(st, [](OverlayCallbackEntry& cb) {
+                return !cb.gw_frame_label;
+            });
+            st.Release();
             ResetOverlayCallbacks();
-            GW::Hook::LeaveHook();
             return;
         }
 
-        // Pre-scan the buffer for popup boundaries.  Only use type 2/3
+        // Pre-scan the HUD range for popup boundaries.  Only use type 2/3
         // (viewport) entries as boundaries — NOT type 1 (callback).
         //
-        // Reason: the trampoline's local viewport variables are uninitialized
+        // Reason: the original pass's local viewport variables are uninitialized
         // at function entry and only set by type 2/3 entries.  If a segment
         // starts with a type 1 callback, the callback receives stack garbage
         // as viewport parameters (whatever prior functions left on the stack).
-        // By restricting boundaries to viewport entries, the trampoline's
-        // first action is always to set the viewport locals, avoiding the
-        // uninitialized-variable issue.
+        // By restricting boundaries to viewport entries, the pass's first action
+        // is always to set the viewport locals, avoiding the uninitialized-variable
+        // issue.
         auto& buffer = *s_RenderBuffer;
         auto& frames = *s_FrameArray;
 
@@ -539,7 +550,7 @@ namespace Compositor {
         boundaries.clear();
         GW::UI::Frame* last_popup = nullptr;
 
-        for (uint32_t i = 0; i < buffer.size(); i++) {
+        for (uint32_t i = hud_start; i < buffer_size; i++) {
             const auto& entry = buffer[i];
             if (entry.type != FRCACHE_CLIENT_VIEWPORT && entry.type != FRCACHE_FRAME_VIEWPORT)
                 continue;
@@ -556,26 +567,21 @@ namespace Compositor {
             }
         }
 
-        // Process the buffer in segments, calling the trampoline for each
-        // segment and injecting TB content at popup boundaries.
-        auto* original_buffer = buffer.m_buffer;
-        auto original_size = buffer.m_size;
-
+        // Process the HUD range in segments, rendering each via render_range and
+        // injecting TB content at popup boundaries.
         static std::vector<bool> tb_drawn;
         tb_drawn.assign(composite.size(), false);
         bool base_overlays_rendered = false;
         GW::UI::Frame* current_floating = nullptr;
         StateTransition st;
         st.Init(s_device);
-        uint32_t seg_start = 0;
+        uint32_t seg_start = hud_start;
 
         for (const auto& boundary : boundaries) {
-            // Let GW process entries [seg_start, boundary.buf_idx) via trampoline
+            // Let GW process entries [seg_start, boundary.buf_idx) via the original pass
             if (boundary.buf_idx > seg_start) {
                 st.EnterGWState();
-                buffer.m_buffer = original_buffer + seg_start;
-                buffer.m_size = boundary.buf_idx - seg_start;
-                FrCacheRenderAll_Trampoline(param_1, param_2);
+                render_range(seg_start, boundary.buf_idx - seg_start);
             }
 
             // Before the first popup: render base UI overlays AND any
@@ -612,26 +618,20 @@ namespace Compositor {
         }
 
         // Process remaining entries after the last boundary
-        st.EnterGWState();
-        buffer.m_buffer = original_buffer + seg_start;
-        buffer.m_size = original_size - seg_start;
-        FrCacheRenderAll_Trampoline(param_1, param_2);
-
-        // Restore original buffer state
-        buffer.m_buffer = original_buffer;
-        buffer.m_size = original_size;
+        if (buffer_size > seg_start) {
+            st.EnterGWState();
+            render_range(seg_start, buffer_size - seg_start);
+        }
 
         // Render any callbacks/overlays that weren't rendered during popup processing.
-        if (s_device) {
-            RunOverlayCallbacks(st, [](OverlayCallbackEntry& cb) {
-                if (cb.gw_frame_label) {
-                    auto* frame = GW::UI::GetFrameByLabel(cb.gw_frame_label);
-                    if (!frame || !frame->IsVisible())
-                        return false;
-                }
-                return true;
-            });
-        }
+        RunOverlayCallbacks(st, [](OverlayCallbackEntry& cb) {
+            if (cb.gw_frame_label) {
+                auto* frame = GW::UI::GetFrameByLabel(cb.gw_frame_label);
+                if (!frame || !frame->IsVisible())
+                    return false;
+            }
+            return true;
+        });
 
         // Render any TB windows not yet drawn
         for (size_t ci = 0; ci < composite.size(); ci++) {
@@ -645,7 +645,7 @@ namespace Compositor {
         st.Release();
 
         ResetOverlayCallbacks();
-        GW::Hook::LeaveHook();
+        s_composited_this_frame = true;
     }
 
     // -----------------------------------------------------------------------
@@ -662,11 +662,9 @@ namespace Compositor {
 
     void ReleaseDeviceResources()
     {
-        if (FrCacheRenderAll_Original) {
-            GW::Hook::DisableHooks(FrCacheRenderAll_Original);
-            GW::Hook::RemoveHook(FrCacheRenderAll_Original);
-            FrCacheRenderAll_Original = nullptr;
-            FrCacheRenderAll_Trampoline = nullptr;
+        if (s_registered) {
+            GameWorldCompositor::SetHudCompositor(nullptr);
+            s_registered = false;
         }
         s_frame_draw_callback = nullptr;
         s_hook_failed = false;
@@ -682,12 +680,14 @@ namespace Compositor {
 
     bool IsHooked()
     {
-        return FrCacheRenderAll_Original != nullptr;
+        // Z-interleaving is active only when we've resolved our globals and registered a HUD
+        // compositor AND GameWorldCompositor's shared hook is actually installed and running.
+        return s_registered && GameWorldCompositor::IsActive();
     }
 
     bool HookFrCacheRender()
     {
-        if (FrCacheRenderAll_Original) return true;
+        if (s_registered) return true;
         if (s_hook_failed) return false;
 
         // ---- Scan for anchor functions via assertions and string references ----
@@ -775,13 +775,12 @@ namespace Compositor {
             return false;
         }
 
-        // ---- Install hooks ----
-
-        FrCacheRenderAll_Original = reinterpret_cast<FrCacheRenderFn>(render_all_addr);
-        GW::Hook::CreateHook(reinterpret_cast<void**>(&FrCacheRenderAll_Original),
-                              FrCacheRenderAll_Hook,
-                              reinterpret_cast<void**>(&FrCacheRenderAll_Trampoline));
-        GW::Hook::EnableHooks(FrCacheRenderAll_Original);
+        // ---- Register with GameWorldCompositor's shared FrCache hook ----
+        // We do NOT hook FrCacheRenderAll ourselves — GameWorldCompositor owns the single
+        // process-wide hook. It renders the 3D world and its in-world overlays, then calls our
+        // HUD compositor to interleave TB windows between GW's HUD frames.
+        GameWorldCompositor::SetHudCompositor(&HudComposite);
+        s_registered = true;
 
         return true;
     }
@@ -793,6 +792,16 @@ namespace Compositor {
     void SetFrameDrawCallback(FrameDrawCallback callback)
     {
         s_frame_draw_callback = callback;
+    }
+
+    bool CompositedThisFrame()
+    {
+        return s_composited_this_frame;
+    }
+
+    void NewFrame()
+    {
+        s_composited_this_frame = false;
     }
 
 }

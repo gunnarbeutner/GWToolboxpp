@@ -78,6 +78,10 @@ namespace {
 
     bool profiling_enabled = false;
 
+    // Guards DrawImGuiFrame to run the ImGui NewFrame→Render cycle at most once per frame: it can
+    // be reached both from the compositor's HUD pass (inside GW's render) and the Draw() fallback.
+    bool imgui_frame_built = false;
+
     utf8::string GetImguiIniPath()
     {
         const auto path = Resources::GetSettingFile(L"interface.ini");
@@ -1179,15 +1183,11 @@ void GWToolbox::Update(GW::HookStatus*)
 // from Draw() as a fallback when the hook hasn't fired.
 static void DrawImGuiFrame(IDirect3DDevice9* device)
 {
+    if (imgui_frame_built) return; // build the ImGui frame at most once per frame
     if (gwtoolbox_disabled) return;
     Resources::DxUpdate(device);
     can_render_toolbox = CanRenderToolbox();
     if (!can_render_toolbox) return;
-
-    // Once-per-frame tick for the shared in-world compositor (installs its hook lazily, resets the
-    // per-frame draw guard) so any module that registered an under-UI draw runs this frame.
-    GameWorldCompositor::BeginFrame();
-    PropSurface::BeginFrame();
 
     ImGui_ImplDX9_NewFrame();
     ImGui_ImplWin32_NewFrame();
@@ -1299,6 +1299,7 @@ static void DrawImGuiFrame(IDirect3DDevice9* device)
         for (ImTextureData* tex : *draw_data->Textures)
             if (tex->Status != ImTextureStatus_OK)
                 ImGui_ImplDX9_UpdateTexture(tex);
+    imgui_frame_built = true;
 }
 
 void GWToolbox::Draw(IDirect3DDevice9* device)
@@ -1342,14 +1343,15 @@ void GWToolbox::Draw(IDirect3DDevice9* device)
         return;
     }
 
-    // When hooked, DrawImGuiFrame runs from inside GW's render pipeline via the
-    // frame draw callback. Otherwise (hook failed or not yet installed), run it here.
-    if (!Compositor::IsHooked()) {
+    // The compositor's HUD pass (inside GW's render, earlier this frame) renders the interleaved
+    // TB windows and sets the "composited" flag. If it didn't run — hook not active yet, world
+    // map, character select, or GW's no-split fallback — build+render the ImGui frame on top here.
+    if (!Compositor::CompositedThisFrame()) {
         DrawImGuiFrame(device);
     }
 
     // Render remaining draw lists (tooltips, popups, etc.).
-    // TB windows rendered during FrCacheRenderAll_Hook have their draw lists cleared,
+    // TB windows rendered during the compositor's HUD pass have their draw lists cleared,
     // so this only draws what's left.
     // Gate on CanRenderToolbox: without it, stale draw data from the last in-game
     // frame would be rendered at character select (where DrawImGuiFrame bails early
@@ -1368,6 +1370,14 @@ void GWToolbox::Draw(IDirect3DDevice9* device)
         ImGui::RenderPlatformWindowsDefault();
         // TODO for OpenGL: restore current GL context.
     }
+
+    // Arm the shared in-world compositor + our HUD compositor for the NEXT frame's FrCache pass,
+    // and reset the per-frame guards. FrCacheRenderAll runs before this render callback each
+    // frame, so the flags it set have now been consumed.
+    GameWorldCompositor::BeginFrame();
+    PropSurface::BeginFrame();
+    Compositor::NewFrame();
+    imgui_frame_built = false;
 }
 
 void GWToolbox::DrawInitialising(IDirect3DDevice9* device)

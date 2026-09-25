@@ -55,6 +55,11 @@ namespace {
     std::vector<std::pair<int, GameWorldCompositor::DrawCallback>> callbacks;
     int next_token = 1;
 
+    // Optional single HUD compositor (the Toolbox z-order compositor): renders the HUD portion
+    // of the buffer, interleaving TB windows between GW's HUD frames. Installs the hook like a
+    // registered draw does.
+    GameWorldCompositor::HudCompositor hud_compositor;
+
     // === shared world-draw pipeline ===
     IDirect3DVertexShader9* vshader = nullptr;
     IDirect3DPixelShader9* pshader = nullptr;
@@ -103,8 +108,8 @@ namespace {
         }
 #endif
 
-        // Nothing to do (no overlays, unusable buffer/device) -> run the original untouched.
-        if (callbacks.empty() || !frame_render_context || !device) {
+        // Nothing to do (no overlays/HUD compositor, unusable buffer/device) -> run the original untouched.
+        if ((callbacks.empty() && !hud_compositor) || !frame_render_context || !device) {
             FrCacheRenderAll_Ret(param_1, param_2);
             GW::Hook::LeaveHook();
             return;
@@ -159,10 +164,23 @@ namespace {
         RunCallbacks(device);
         drawn_this_frame = true;
 
-        // 3) HUD portion (drawn on top of the overlays)
-        buffer.m_buffer = orig_buffer + boundary;
-        buffer.m_size = orig_size - boundary;
-        FrCacheRenderAll_Ret(param_1, param_2);
+        // 3) HUD portion (drawn on top of the overlays). When a HUD compositor is registered
+        // (the Toolbox z-order compositor), hand it the HUD range [boundary, orig_size) plus a
+        // range renderer so it can interleave TB windows between GW's HUD frames; otherwise
+        // render the whole HUD in one pass.
+        if (hud_compositor) {
+            const GameWorldCompositor::RenderRange render_range = [&](uint32_t start, uint32_t count) {
+                buffer.m_buffer = orig_buffer + start;
+                buffer.m_size = count;
+                FrCacheRenderAll_Ret(param_1, param_2);
+            };
+            hud_compositor(boundary, orig_size, render_range);
+        }
+        else {
+            buffer.m_buffer = orig_buffer + boundary;
+            buffer.m_size = orig_size - boundary;
+            FrCacheRenderAll_Ret(param_1, param_2);
+        }
 
         // restore the buffer for GW
         buffer.m_buffer = orig_buffer;
@@ -282,9 +300,18 @@ void GameWorldCompositor::UnregisterDraw(const int token)
         return;
     }
     std::erase_if(callbacks, [token](const auto& entry) { return entry.first == token; });
-    if (callbacks.empty()) {
+    if (callbacks.empty() && !hud_compositor) {
         RemoveHook();
     }
+}
+
+void GameWorldCompositor::SetHudCompositor(HudCompositor callback)
+{
+    hud_compositor = std::move(callback);
+    if (!hud_compositor && callbacks.empty()) {
+        RemoveHook();
+    }
+    // Install is deferred to BeginFrame (render time) like RegisterDraw.
 }
 
 #ifdef _DEBUG
@@ -307,7 +334,7 @@ bool GameWorldCompositor::HasFailed()
 void GameWorldCompositor::BeginFrame()
 {
     // Install the hook lazily once something wants to draw; retried each frame until it succeeds or fails.
-    if (!callbacks.empty()) {
+    if (!callbacks.empty() || hud_compositor) {
         EnsureHook();
     }
     drawn_this_frame = false;
@@ -394,6 +421,7 @@ void GameWorldCompositor::Terminate()
 {
     RemoveHook();
     callbacks.clear();
+    hud_compositor = nullptr;
     if (vshader) {
         vshader->Release();
         vshader = nullptr;

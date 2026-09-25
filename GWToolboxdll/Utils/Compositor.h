@@ -68,12 +68,20 @@ namespace Compositor {
 
     UnifiedZOrder& GetUnifiedZOrder();
 
-    // Install hooks on GW's render pipeline.
-    // Returns true if hooks are active, false if scanning failed (renders TB on top).
+    // Resolve GW render globals and register the TB HUD compositor with GameWorldCompositor's
+    // single shared FrCache hook. Idempotent; returns true once integrated, false if scanning
+    // failed (TB then renders on top via the Draw() fallback).
     bool HookFrCacheRender();
 
-    // Returns true if the render pipeline hooks are installed and active.
+    // Returns true if z-interleaving is active (registered AND GameWorldCompositor's hook running).
     bool IsHooked();
+
+    // True if the HUD compositor rendered the TB windows this frame. When false, GWToolbox::Draw
+    // must build+render the ImGui frame on top itself (fallback). Reset each frame via NewFrame().
+    bool CompositedThisFrame();
+
+    // Reset the per-frame "composited" flag. Call once per frame from the render callback.
+    void NewFrame();
 
     // Store D3D device for use during hooks.
     void SetDevice(IDirect3DDevice9* device);
